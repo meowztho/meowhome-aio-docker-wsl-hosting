@@ -829,9 +829,9 @@ docker exec -it meowhome_db mysql -u root -p
 
 ---
 
-## 📄 License
+## 📜 License
 
-MIT License - siehe [LICENSE](LICENSE) Datei
+MIT – see [LICENSE](LICENSE) for details.
 
 ---
 
