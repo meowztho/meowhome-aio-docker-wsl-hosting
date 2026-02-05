@@ -14,16 +14,16 @@ A fully automated hosting setup für mehrere Domains mit Apache, PHP, MariaDB, L
 
 
 - [Features](#-features)
-- [Requirements](#requirements)
-- [Quick Start](#quick-start)
-- [Architecture](#architecture)
-- [Configuration](#configuration)
-- [FTP Management](#ftp-management)
-- [SSL/TLS Zertifikate](#ssltls-zertifikate)
-- [Troubleshooting](#troubleshooting)
-- [Best Practices](#best-practices)
-- [Contributing](#contributing)
-- [License](#license)
+- [Requirements](#-requirements)
+- [Quick Start](#-quick-start)
+- [Architecture](#%EF%B8%8F-architecture)
+- [Configuration](#%EF%B8%8F-configuration)
+- [FTP Management](#-ftp-management)
+- [SSL/TLS Zertifikate](#-ssltls-zertifikate)
+- [Troubleshooting](#-troubleshooting)
+- [Best Practices](#-best-practices)
+- [Contributing](#-contributing)
+- [License](#-license)
 
 ---
 
@@ -854,6 +854,7 @@ If DGSM saves you time or helps you run your servers, please consider supporting
 
 - [**GitHub Sponsors**](https://github.com/sponsors/meowztho)
 - [**Paypal**](paypal.me/farrnbacher)
+  
 ⭐ **Star this repo if it helped you!** ⭐
 
 </div>
