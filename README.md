@@ -13,16 +13,16 @@ A fully automated hosting setup für mehrere Domains mit Apache, PHP, MariaDB, L
 ## 📋 Table of Contents
 
 - [Features](#-features)
-- [Requirements](#-voraussetzungen)
+- [Requirements](#requirements)
 - [Quick Start](#-quick-start)
-- [Architecture](#-architektur)
-- [Configuration](#-konfiguration)
+- [Architecture](#architecture)
+- [Configuration](#configuration)
 - [FTP Management](#-ftp-management)
 - [SSL/TLS Zertifikate](#-ssltls-zertifikate)
-- [Troubleshooting](#-fehlerbehebung)
+- [Troubleshooting](#troubleshooting)
 - [Best Practices](#-best-practices)
 - [Contributing](#-contributing)
-- [License](#-lizenz)
+- [License](#license)
 
 ---
 
