@@ -12,6 +12,7 @@ A fully automated hosting setup für mehrere Domains mit Apache, PHP, MariaDB, L
 
 ## 📋 Table of Contents
 
+
 - [Features](#features)
 - [Requirements](#requirements)
 - [Quick Start](#quick-start)
@@ -829,11 +830,17 @@ docker exec -it meowhome_db mysql -u root -p
 
 ---
 
-## 📜 License
+## 📄 License
 
-MIT – see [LICENSE](LICENSE) for details.
+MIT License - siehe [LICENSE](LICENSE) Datei
 
 ---
+
+## 📧 Support
+
+- **Issues**: [GitHub Issues](https://github.com/yourusername/meowhome/issues)
+- **Discussions**: [GitHub Discussions](https://github.com/yourusername/meowhome/discussions)
+- **Email**: admin@example.com
 
 ---
 
