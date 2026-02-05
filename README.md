@@ -6,6 +6,7 @@ A fully automated hosting setup für mehrere Domains mit Apache, PHP, MariaDB, L
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Docker](https://img.shields.io/badge/Docker-Ready-blue.svg)](https://www.docker.com/)
+![Python in Docker](https://img.shields.io/badge/Python%20in-Docker-blue?logo=python&logoColor=white)
 [![FTP](https://img.shields.io/badge/FTP-vsftpd-green.svg)](https://security.appspot.com/vsftpd.html)
 
 ---
