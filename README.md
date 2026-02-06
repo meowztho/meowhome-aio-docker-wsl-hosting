@@ -22,7 +22,7 @@ A fully automated hosting setup for multiple domains with Apache, PHP, MariaDB, 
 - [SSL/TLS Certificates](#-ssltls-certificates)
 - [Troubleshooting](#-troubleshooting)
 - [Best Practices](#-best-practices)
-- [Contributing](#-contributing)
+- [USEFUL COMMANDS](#useful-commands)
 - [License](#-license)
 
 ---
@@ -717,7 +717,7 @@ docker compose up -d
 sudo ./tools/ftp/meowftp.py apply
 ```
 
-## USEFUL COMMANDS
+## 🕹️ USEFUL COMMANDS
 
 ```bash
 📊 Check status:  
