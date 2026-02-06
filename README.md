@@ -2,7 +2,7 @@
 
 **All-in-One Docker-based Web Hosting Stack with FTP, SSL, and DNS Management**
 
-A fully automated hosting setup für mehrere Domains mit Apache, PHP, MariaDB, Let's Encrypt SSL-Zertifikaten, Cloudflare DNS-Updater und FTP Virtual Users.
+A fully automated hosting setup for multiple domains with Apache, PHP, MariaDB, Let's Encrypt SSL certificates, a Cloudflare DNS updater, and FTP virtual users.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Docker](https://img.shields.io/badge/Docker-Ready-blue.svg)](https://www.docker.com/)
@@ -13,14 +13,13 @@ A fully automated hosting setup für mehrere Domains mit Apache, PHP, MariaDB, L
 
 ## 📋 Table of Contents
 
-
 - [Features](#-features)
 - [Requirements](#-requirements)
 - [Quick Start](#-quick-start)
 - [Architecture](#%EF%B8%8F-architecture)
 - [Configuration](#%EF%B8%8F-configuration)
 - [FTP Management](#-ftp-management)
-- [SSL/TLS Zertifikate](#-ssltls-zertifikate)
+- [SSL/TLS Certificates](#-ssltls-certificates)
 - [Troubleshooting](#-troubleshooting)
 - [Best Practices](#-best-practices)
 - [Contributing](#-contributing)
@@ -31,47 +30,47 @@ A fully automated hosting setup für mehrere Domains mit Apache, PHP, MariaDB, L
 ## ✨ Features
 
 ### 🌐 Web Stack
-- **Apache 2.4** mit HTTP/2 Support
-- **PHP 8.3-FPM** (Alpine-basiert, optimiert)
-- **MariaDB 10.11** für Databaseen
-- **phpMyAdmin** (localhost-only, sicher)
+- **Apache 2.4** with HTTP/2 support
+- **PHP 8.3-FPM** (Alpine-based, optimized)
+- **MariaDB 10.11** for databases
+- **phpMyAdmin** (localhost-only, secured)
 
 ### 🔒 SSL & DNS
-- **Let's Encrypt** Wildcard-Zertifikate via Cloudflare DNS
-- **Automatische Renewal** alle 12 Stunden
-- **DNS Updater** für dynamische IPs (Cloudflare)
-- **HSTS** und moderne SSL-Configuration
+- **Let's Encrypt** wildcard certificates via Cloudflare DNS
+- **Automatic renewal** every 12 hours
+- **DNS updater** for dynamic IPs (Cloudflare)
+- **HSTS** and modern SSL configuration
 
 ### 📁 FTP Server
-- **vsftpd** mit Virtual Users (PAM-basiert)
-- **Pro-Domain Isolation** oder Full Access
-- **FTPS** Support (TLS/SSL)
-- **Passwort-Management Tool** (meowftp.py)
-- **SQLite User Database** auf Host
+- **vsftpd** with virtual users (PAM-based)
+- **Per-domain isolation** or full access
+- **FTPS** support (TLS/SSL)
+- **Password management tool** (`meowftp.py`)
+- **SQLite user database** on the host
 
 ### 🛠️ Management Tools
-- **meowftp.py**: Komfortables User-Management
-- **debug-ftp.sh**: Umfassende Diagnose
-- **fix-permissions.sh**: Auto-Repair für Permissions
-- **build-ftps-pem.sh**: SSL-Cert Converter
+- **meowftp.py**: convenient user management
+- **debug-ftp.sh**: comprehensive diagnostics
+- **fix-permissions.sh**: auto-repair for permissions
+- **build-ftps-pem.sh**: SSL cert converter
 
 ---
 
 ## 🔧 Requirements
 
 ### System
-- **Linux** (getestet auf Ubuntu 22.04/24.04, Debian 12)
+- **Linux** (tested on Ubuntu 22.04/24.04, Debian 12)
 - **Docker** ≥ 20.10
 - **Docker Compose** ≥ 2.0
-- **Root-Zugriff** (für FTP User Management)
+- **Root access** (required for FTP user management)
 
-### Netzwerk
-- **Ports**: 80, 443, 21, 21000-21010 müssen frei sein
-- **Port-Forwarding** am Router für externe Erreichbarkeit
-- **Cloudflare Account** mit API Token (Zone:DNS Edit)
+### Network
+- **Ports**: 80, 443, 21, 21000-21010 must be available
+- **Port forwarding** on your router for external reachability
+- **Cloudflare account** with API token (Zone: DNS Edit)
 
 ### Optional
-- **WSL2** (Windows-User können MeowHome in WSL2 betreiben)
+- **WSL2** (Windows users can run MeowHome in WSL2)
 
 ---
 
@@ -80,11 +79,11 @@ A fully automated hosting setup für mehrere Domains mit Apache, PHP, MariaDB, L
 ### 1. Installation
 
 ```bash
-# Repository klonen (oder Script herunterladen)
-git clone https://github.com/yourusername/meowhome.git
+# Clone repository (or download the script)
+git clone https://github.com/meowztho/meowhome-aio-docker-wsl-hosting.git
 cd meowhome
 
-# Init-Script ausführen
+# Run init script
 chmod +x init-meowhome.sh
 ./init-meowhome.sh ~/meowhome
 ```
@@ -96,56 +95,56 @@ cd ~/meowhome
 nano .env
 ```
 
-**Minimal-Configuration:**
+**Minimal configuration:**
 
 ```bash
-# Deine Domains (komma-separiert)
+# Your domains (comma-separated)
 DOMAINS=example.com,example.net
 
-# Let's Encrypt Email
+# Let's Encrypt email
 LE_EMAIL=admin@example.com
 
-# Cloudflare API Token
-CLOUDFLARE_API_TOKEN=dein_cloudflare_token_hier
+# Cloudflare API token
+CLOUDFLARE_API_TOKEN=your_cloudflare_token_here
 
-# FTP: Öffentliche IP oder Domain
+# FTP: public IP or domain
 FTP_PUBLIC_HOST=ftp.example.com
 
-# Database Passwörter
-DB_ROOT_PASSWORD=sicheres_passwort_hier
-DB_PASSWORD=app_passwort_hier
+# Database passwords
+DB_ROOT_PASSWORD=secure_password_here
+DB_PASSWORD=app_password_here
 ```
 
-### 3. System starten
+### 3. Start the system
 
 ```bash
-# Container bauen und starten
+# Build and start containers
 docker compose up -d --build
 
-# Logs verfolgen
+# Follow logs
 docker compose logs -f
 ```
 
-### 4. FTP User erstellen
+### 4. Create FTP users
 
 ```bash
-# User für spezifische Domain
+# User for a specific domain
 ./tools/ftp/meowftp.py add webmaster example.com
 
-# User mit Vollzugriff
+# User with full access
 ./tools/ftp/meowftp.py add admin ""
 
-# Änderungen aktivieren (benötigt sudo!)
+# Apply changes (requires sudo!)
 sudo ./tools/ftp/meowftp.py apply
 ```
 
-### 5. Zertifikate prüfen
+### 5. Check certificates
 
 ```bash
-# Certbot Logs anschauen
+# View certbot logs
 docker logs -f meowhome_certbot
 
-# Wenn Zertifikate erfolgreich erstellt wurden:
+# If certificates were created successfully:
 ls -la letsencrypt/live/
 ```
 
@@ -200,29 +199,29 @@ ls -la letsencrypt/live/
 └──────────────────────────────────────────────────────────────┘
 ```
 
-### Container Übersicht
+### Container Overview
 
-| Container | Image | Ports | Beschreibung |
-|-----------|-------|-------|--------------|
-| `meowhome_apache` | Custom (Debian) | 80, 443 | Web Server |
+| Container | Image | Ports | Description |
+|-----------|-------|-------|-------------|
+| `meowhome_apache` | Custom (Debian) | 80, 443 | Web server |
 | `meowhome_php` | php:8.3-fpm-alpine | - | PHP-FPM |
 | `meowhome_db` | mariadb:10.11 | - | Database |
-| `meowhome_ftp` | Custom (Debian) | 21, 21000-21010 | FTP Server |
-| `meowhome_certbot` | certbot/certbot | - | SSL Zertifikate |
-| `meowhome_dns_updater` | python:3.12-slim | - | DNS Updates |
+| `meowhome_ftp` | Custom (Debian) | 21, 21000-21010 | FTP server |
+| `meowhome_certbot` | certbot/certbot | - | SSL certificates |
+| `meowhome_dns_updater` | python:3.12-slim | - | DNS updates |
 | `meowhome_pma` | phpmyadmin:5 | 127.0.0.1:8080 | phpMyAdmin |
 
 ---
 
 ## ⚙️ Configuration
 
-### .env Datei - Alle Optionen
+### `.env` File – All Options
 
 ```bash
 # ============================================================
 # Windows/LAN Integration
 # ============================================================
-WIN_HOST_IP=192.168.178.59  # Für Reverse Proxy zu Windows-Apps
+WIN_HOST_IP=192.168.178.59  # For reverse proxy to Windows apps
 
 # ============================================================
 # Domains & DNS
@@ -247,10 +246,10 @@ RETRY_INTERVAL_SECONDS=300
 LE_EMAIL=admin@example.com
 CF_PROPAGATION_SECONDS=30
 
-# Wildcard Mode (empfohlen)
+# Wildcard Mode (recommended)
 WILDCARD=true
 
-# Alternativ: Spezifische Hosts
+# Alternative: specific hosts
 # WILDCARD=false
 # HOSTS=example.com,www.example.com,shop.example.com
 
@@ -261,21 +260,21 @@ FTP_ENABLED=true
 FTP_PASV_MIN=21000
 FTP_PASV_MAX=21010
 
-# WICHTIG: Öffentliche IP oder DNS Name!
+# IMPORTANT: public IP or DNS name!
 FTP_PUBLIC_HOST=ftp.example.com
 
-# FTPS (nach Cert-Erstellung)
+# FTPS (after cert creation)
 FTP_TLS=NO
 FTP_CERT_DOMAIN=example.com
 
-# File Permissions
+# File permissions
 FTP_HOST_UID=1000
 FTP_HOST_GID=1000
 
 # ============================================================
 # Database
 # ============================================================
-#Host mariadb
+# Host mariadb
 DB_ROOT_PASSWORD=super_secure_root_password
 DB_NAME=app
 DB_USER=app
@@ -284,7 +283,7 @@ DB_PASSWORD=secure_app_password
 
 ### Apache VHosts
 
-Erstelle VHost-Dateien in `apache/vhosts/`:
+Create VHost files in `apache/vhosts/`:
 
 ```apache
 # apache/vhosts/10-mysite.conf
@@ -319,7 +318,7 @@ Erstelle VHost-Dateien in `apache/vhosts/`:
 </VirtualHost>
 ```
 
-**Reverse Proxy Beispiel (Jellyfin):**
+**Reverse proxy example (Jellyfin):**
 
 ```apache
 # apache/vhosts/20-jellyfin.conf
@@ -341,56 +340,56 @@ Erstelle VHost-Dateien in `apache/vhosts/`:
 
 ## 📁 FTP Management
 
-### meowftp.py - User Management Tool
+### `meowftp.py` – User Management Tool
 
-Das Tool verwaltet FTP Virtual Users in einer SQLite-Database und synchronisiert sie mit vsftpd.
+The tool manages FTP virtual users in a SQLite database and synchronizes them with `vsftpd`.
 
-#### Befehle
+#### Commands
 
 ```bash
-# User auflisten
+# List users
 ./tools/ftp/meowftp.py list
 
-# User hinzufügen (Domain-spezifisch)
+# Add user (domain-specific)
 ./tools/ftp/meowftp.py add webmaster example.com
 
-# User hinzufügen (Vollzugriff auf alle Domains)
+# Add user (full access to all domains)
 ./tools/ftp/meowftp.py add admin ""
 
-# User löschen
+# Delete user
 ./tools/ftp/meowftp.py del username
 
-# User deaktivieren (ohne zu löschen)
+# Disable user (without deleting)
 ./tools/ftp/meowftp.py disable username
 
-# User aktivieren
+# Enable user
 ./tools/ftp/meowftp.py enable username
 
-# Passwort ändern
+# Change password
 ./tools/ftp/meowftp.py passwd username
 
-# Home-Verzeichnis ändern
+# Change home directory
 ./tools/ftp/meowftp.py home username example.net
 
-# Änderungen aktivieren (WICHTIG!)
+# Apply changes (IMPORTANT!)
 sudo ./tools/ftp/meowftp.py apply
 ```
 
-#### Workflow Beispiel
+#### Example Workflow
 
 ```bash
-# 1. User für example.com erstellen
+# 1. Create user for example.com
 ./tools/ftp/meowftp.py add alice example.com
-# Passwort eingeben: ********
+# Enter password: ********
 
-# 2. Admin mit Vollzugriff erstellen
+# 2. Create admin with full access
 ./tools/ftp/meowftp.py add admin ""
-# WARNUNG erscheint, mit "yes" bestätigen
+# WARNING appears, confirm with "yes"
 
-# 3. Änderungen aktivieren
+# 3. Apply changes
 sudo ./tools/ftp/meowftp.py apply
 
-# 4. Status prüfen
+# 4. Check status
 ./tools/ftp/meowftp.py list
 # alice                enabled=✓ path=htdocs/example.com
 # admin                enabled=✓ path=htdocs/(all domains)
@@ -400,58 +399,58 @@ sudo ./tools/ftp/meowftp.py apply
 
 ```
 htdocs/
-├── example.com/          ← User "alice" sieht nur diesen Ordner
+├── example.com/          ← User "alice" can only see this folder
 │   ├── index.php
 │   └── .htaccess
-└── example.net/          ← User "bob" sieht nur diesen Ordner
+└── example.net/          ← User "bob" can only see this folder
     └── index.php
 
-User "admin" (home_rel="") sieht:
+User "admin" (home_rel="") sees:
 htdocs/
 ├── example.com/
 └── example.net/
 ```
 
-### FileZilla Verbindung
+### FileZilla Connection
 
 ```
-Host:      ftp.example.com (oder deine öffentliche IP)
+Host:      ftp.example.com (or your public IP)
 Port:      21
-Protokoll: FTP (oder FTPS wenn aktiviert)
+Protocol:  FTP (or FTPS if enabled)
 User:      alice
-Passwort:  ********
+Password:  ********
 ```
 
-**Für FTPS:**
+**For FTPS:**
 ```
-Protokoll: FTP - File Transfer Protocol (Explizites TLS)
+Protocol:  FTP - File Transfer Protocol (Explicit TLS)
 Port:      21
 ```
 
 ---
 
-## 🔒 SSL/TLS Zertifikate
+## 🔒 SSL/TLS Certificates
 
-### Let's Encrypt Wildcard Zertifikate
+### Let's Encrypt Wildcard Certificates
 
-MeowHome nutzt **Cloudflare DNS-01 Challenge** für Wildcard-Zertifikate:
+MeowHome uses the **Cloudflare DNS-01 challenge** for wildcard certificates:
 
 ```bash
-# Certbot läuft automatisch und erstellt Certs für:
+# Certbot runs automatically and creates certs for:
 # - example.com
 # - *.example.com
 # - example.net
 # - *.example.net
 ```
 
-#### Manueller Certbot Restart
+#### Manual Certbot Restart
 
 ```bash
 docker compose restart certbot
 docker logs -f meowhome_certbot
 ```
 
-#### Zertifikat-Verzeichnis
+#### Certificate Directory
 
 ```
 letsencrypt/
@@ -465,116 +464,116 @@ letsencrypt/
         └── privkey.pem
 ```
 
-### FTPS aktivieren
+### Enable FTPS
 
 ```bash
-# 1. Warte bis Certbot erfolgreich war
+# 1. Wait until certbot succeeded
 docker logs meowhome_certbot | grep "Successfully"
 
-# 2. Erstelle vsftpd PEM aus Let's Encrypt Cert
+# 2. Create vsftpd PEM from Let's Encrypt cert
 ./ftp/build-ftps-pem.sh example.com
 
-# 3. Aktiviere TLS in .env
+# 3. Enable TLS in .env
 nano .env
 # FTP_TLS=YES
 
-# 4. FTP Container neustarten
+# 4. Restart FTP container
 docker compose restart ftp
 
-# 5. In FileZilla: "FTP - Explizites TLS" nutzen
+# 5. In FileZilla: use "FTP - Explicit TLS"
 ```
 
 ---
 
 ## 🐛 Troubleshooting
 
-### FTP Login schlägt fehl (530 Login incorrect)
+### FTP login fails (530 Login incorrect)
 
 ```bash
-# 1. Debug Report ausführen
+# 1. Run debug report
 ./tools/ftp/debug-ftp.sh
 
-# 2. Prüfe ob apply ausgeführt wurde
+# 2. Check whether apply was executed
 ./tools/ftp/meowftp.py list
-# Wenn User da sind, aber Login fehlschlägt:
+# If users exist but login fails:
 sudo ./tools/ftp/meowftp.py apply
 
-# 3. Live Logs während Login-Versuch
+# 3. Live logs during login attempt
 docker logs -f meowhome_ftp
 
-# 4. PAM Config prüfen
+# 4. Check PAM config
 docker exec meowhome_ftp cat /etc/pam.d/vsftpd_virtual
-# Sollte enthalten: crypt=crypt
+# Should contain: crypt=crypt
 
-# 5. User Database prüfen
+# 5. Check user database
 docker exec meowhome_ftp db5.3_dump /etc/vsftpd/users.db | head -10
 ```
 
-### Apache startet nicht / SSL Fehler
+### Apache doesn't start / SSL error
 
 ```bash
-# Wenn Zertifikate noch nicht existieren:
-# 1. SSL VHosts temporär deaktivieren
+# If certificates do not exist yet:
+# 1. Temporarily disable SSL VHosts
 mv apache/vhosts/10-example.conf apache/vhosts/10-example.conf.disabled
 
-# 2. Apache neustarten
+# 2. Restart Apache
 docker compose restart web
 
-# 3. Auf Certbot warten
+# 3. Wait for certbot
 docker logs -f meowhome_certbot
 
-# 4. Nach erfolgreicher Cert-Erstellung VHost wieder aktivieren
+# 4. After successful cert creation, enable VHost again
 mv apache/vhosts/10-example.conf.disabled apache/vhosts/10-example.conf
 docker compose restart web
 ```
 
-### Permission Denied beim FTP Upload
+### Permission denied on FTP upload
 
 ```bash
-# 1. Fix Permissions Tool nutzen
+# 1. Use fix permissions tool
 ./tools/ftp/fix-permissions.sh
 
-# 2. Manuell prüfen
+# 2. Check manually
 docker exec meowhome_ftp ls -la /var/www/example.com
 
-# Sollte sein: drwxrwxr-x ftp ftp
+# Should be: drwxrwxr-x ftp ftp
 
-# 3. UID/GID in .env prüfen
+# 3. Check UID/GID in .env
 cat .env | grep FTP_HOST
 # FTP_HOST_UID=1000
 # FTP_HOST_GID=1000
 
-# 4. Host UID herausfinden
+# 4. Find host UID
 id -u
 id -g
 ```
 
-### DNS Updater funktioniert nicht
+### DNS updater not working
 
 ```bash
-# Logs prüfen
+# Check logs
 docker logs meowhome_dns_updater
 
-# Cloudflare Token testen
+# Verify Cloudflare token
 curl -X GET "https://api.cloudflare.com/client/v4/user/tokens/verify" \
   -H "Authorization: Bearer YOUR_TOKEN_HERE"
 
-# State-File prüfen
+# Check state file
 cat state/state.json
 ```
 
-### Container startet nicht
+### Container does not start
 
 ```bash
-# Alle Container Status
+# Status of all containers
 docker compose ps
 
-# Logs eines spezifischen Containers
+# Logs for a specific container
 docker compose logs web
 docker compose logs php
 docker compose logs ftp
 
-# Container neu bauen
+# Rebuild containers
 docker compose build --no-cache
 docker compose up -d
 ```
@@ -583,34 +582,34 @@ docker compose up -d
 
 ## 🎯 Best Practices
 
-### Sicherheit
+### Security
 
-1. **Passwörter**: Niemals default Passwörter nutzen
-2. **FTP Users**: Pro Developer einen eigenen User
-3. **phpMyAdmin**: Nur über SSH Tunnel nutzen (`ssh -L 8080:localhost:8080 user@server`)
-4. **.env**: Niemals in Git committen (ist in .gitignore)
-5. **Firewall**: UFW oder iptables einrichten
-6. **Updates**: Regelmäßig `docker compose pull && docker compose up -d`
+1. **Passwords**: Never use default passwords
+2. **FTP users**: One user per developer
+3. **phpMyAdmin**: Only use via SSH tunnel (`ssh -L 8080:localhost:8080 user@server`)
+4. **.env**: Never commit to Git (it is in `.gitignore`)
+5. **Firewall**: Configure UFW or iptables
+6. **Updates**: Regularly run `docker compose pull && docker compose up -d`
 
 ### Performance
 
-1. **PHP OPcache**: Ist aktiviert in `php/custom.ini`
-2. **Apache HTTP/2**: Ist aktiviert
-3. **MariaDB**: InnoDB Buffer Pool bei viel Traffic anpassen
+1. **PHP OPcache**: Enabled in `php/custom.ini`
+2. **Apache HTTP/2**: Enabled
+3. **MariaDB**: Adjust InnoDB buffer pool for high traffic
 
 ### Backup
 
 ```bash
-# Database Backup
+# Database backup
 docker exec meowhome_db mysqldump -u root -p$DB_ROOT_PASSWORD --all-databases > backup.sql
 
-# Webroot Backup
+# Webroot backup
 tar -czf htdocs-backup.tar.gz htdocs/
 
-# FTP User DB Backup
+# FTP user DB backup
 cp ftp/users.sqlite ftp-users-backup.sqlite
 
-# Complete Backup
+# Complete backup
 tar -czf meowhome-backup-$(date +%Y%m%d).tar.gz \
   --exclude='db/*' \
   --exclude='state/*' \
@@ -620,13 +619,13 @@ tar -czf meowhome-backup-$(date +%Y%m%d).tar.gz \
 ### Monitoring
 
 ```bash
-# Alle Container Status
+# Container stats
 docker stats
 
-# Disk Usage
+# Disk usage
 docker system df
 
-# Logs rotieren (wenn zu groß)
+# Rotate logs (if too large)
 docker compose logs --tail=100 > logs.txt
 docker compose down
 docker system prune -a
@@ -643,13 +642,13 @@ meowhome/
 │   ├── vhosts/              # Apache VirtualHost Configs
 │   │   ├── 10-example.conf
 │   │   └── 20-templates.conf
-│   └── snippets/            # Wiederverwendbare Configs
+│   └── snippets/            # Reusable configs
 │       ├── php-fpm.conf
 │       ├── ssl-common.conf
 │       └── cf-safe-redirect.conf
 ├── certbot/
 │   ├── Dockerfile
-│   └── run.sh               # Let's Encrypt Automation
+│   └── run.sh               # Let's Encrypt automation
 ├── dns-updater/
 │   ├── Dockerfile
 │   ├── run.sh
@@ -657,34 +656,34 @@ meowhome/
 ├── ftp/
 │   ├── Dockerfile
 │   ├── entrypoint.sh
-│   ├── build-ftps-pem.sh   # FTPS Cert Builder
-│   ├── data/                # FTP Config (Volume)
-│   │   ├── users.d/         # Per-User Configs
-│   │   ├── users.db         # Berkeley DB (generiert)
-│   │   └── users.txt        # Plaintext User List (temp)
-│   ├── ssl/                 # FTPS Certificates
+│   ├── build-ftps-pem.sh   # FTPS cert builder
+│   ├── data/                # FTP config (volume)
+│   │   ├── users.d/         # Per-user configs
+│   │   ├── users.db         # Berkeley DB (generated)
+│   │   └── users.txt        # Plaintext user list (temp)
+│   ├── ssl/                 # FTPS certificates
 │   │   └── vsftpd.pem
-│   └── users.sqlite         # User Database (Host)
-├── htdocs/                  # Web Root (Volume)
+│   └── users.sqlite         # User database (host)
+├── htdocs/                  # Web root (volume)
 │   ├── example.com/
 │   │   └── index.php
 │   └── example.net/
 │       └── index.php
 ├── php/
 │   ├── Dockerfile
-│   └── custom.ini           # PHP Settings
+│   └── custom.ini           # PHP settings
 ├── web/
-│   └── Dockerfile           # Apache Image
+│   └── Dockerfile           # Apache image
 ├── tools/
 │   ├── ftp/
-│   │   ├── meowftp.py      # FTP User Management
-│   │   ├── debug-ftp.sh    # Diagnose Tool
+│   │   ├── meowftp.py      # FTP user management
+│   │   ├── debug-ftp.sh    # Diagnostic tool
 │   │   └── fix-permissions.sh
 │   └── apache/
-├── db/                      # MariaDB Data (Volume, gitignored)
-├── letsencrypt/            # Let's Encrypt Certs (Volume)
-├── state/                   # Runtime State (gitignored)
-├── legacy/                  # Alte Scripts
+├── db/                      # MariaDB data (volume, gitignored)
+├── letsencrypt/            # Let's Encrypt certs (volume)
+├── state/                   # Runtime state (gitignored)
+├── legacy/                  # Old scripts
 ├── docker-compose.yml
 ├── .env                     # Configuration (gitignored!)
 ├── .env.example             # Template
@@ -698,23 +697,23 @@ meowhome/
 ```bash
 cd ~/meowhome
 
-# 1. Backup erstellen
+# 1. Create a backup
 docker compose down
 tar -czf backup-$(date +%Y%m%d).tar.gz \
   .env htdocs/ ftp/users.sqlite apache/vhosts/
 
-# 2. Neuestes init-Script holen
+# 2. Fetch the latest init script
 wget https://raw.githubusercontent.com/yourusername/meowhome/main/init-meowhome.sh
 chmod +x init-meowhome.sh
 
-# 3. Update ausführen (überschreibt nur System-Dateien, nicht deine Daten)
+# 3. Run update (overwrites only system files, not your data)
 ./init-meowhome.sh ~/meowhome
 
-# 4. Container neu bauen
+# 4. Rebuild containers
 docker compose build --no-cache
 docker compose up -d
 
-# 5. FTP User neu applyen
+# 5. Re-apply FTP users
 sudo ./tools/ftp/meowftp.py apply
 ```
 
@@ -745,30 +744,31 @@ docker compose restart php
 docker compose restart web  
 docker compose restart ftp
 ```
+
 ---
 
 ## 🤝 Contributing
 
-Contributions sind willkommen! Bitte:
+Contributions are welcome! Please:
 
-1. Fork das Repository
-2. Feature Branch erstellen (`git checkout -b feature/AmazingFeature`)
-3. Änderungen committen (`git commit -m 'Add some AmazingFeature'`)
-4. Branch pushen (`git push origin feature/AmazingFeature`)
-5. Pull Request öffnen
+1. Fork the repository
+2. Create a feature branch (`git checkout -b feature/AmazingFeature`)
+3. Commit your changes (`git commit -m 'Add some AmazingFeature'`)
+4. Push the branch (`git push origin feature/AmazingFeature`)
+5. Open a Pull Request
 
-### Entwickler Setup
+### Developer Setup
 
 ```bash
-# Repository klonen
+# Clone repository
 git clone https://github.com/yourusername/meowhome.git
 cd meowhome
 
-# Eigene .env erstellen
+# Create your own .env
 cp .env.example .env
 nano .env
 
-# Dev-Umgebung starten
+# Start dev environment
 docker compose up --build
 ```
 
@@ -778,58 +778,58 @@ docker compose up --build
 
 ### Version 2.0 (2024-02)
 - ✅ **FIX**: FTP Virtual Users Authentication (PAM crypt=crypt)
-- ✅ **NEW**: Robustes meowftp.py mit Container-Readiness
-- ✅ **NEW**: Umfassende Debug-Tools
-- ✅ **IMPROVED**: Dokumentation und Error Handling
+- ✅ **NEW**: Robust `meowftp.py` with container readiness
+- ✅ **NEW**: Comprehensive debug tools
+- ✅ **IMPROVED**: Documentation and error handling
 
 ### Version 1.0 (2024-01)
-- Initial Release
+- Initial release
 
 ---
 
 ## ❓ FAQ
 
 <details>
-<summary><strong>Kann ich MeowHome ohne Docker nutzen?</strong></summary>
+<summary><strong>Can I use MeowHome without Docker?</strong></summary>
 
-Nein, MeowHome ist vollständig Docker-basiert. Das vereinfacht Installation, Isolation und Updates erheblich.
+No, MeowHome is fully Docker-based. This greatly simplifies installation, isolation, and updates.
 </details>
 
 <details>
-<summary><strong>Welche PHP Extensions sind verfügbar?</strong></summary>
+<summary><strong>Which PHP extensions are available?</strong></summary>
 
-Standard: `intl`, `pdo`, `pdo_mysql`, `zip`, `opcache`, `mbstring`, `gd`
+Default: `intl`, `pdo`, `pdo_mysql`, `zip`, `opcache`, `mbstring`, `gd`
 
-Weitere Extensions können in `php/Dockerfile` hinzugefügt werden.
+Additional extensions can be added in `php/Dockerfile`.
 </details>
 
 <details>
-<summary><strong>Kann ich mehrere PHP Versionen gleichzeitig nutzen?</strong></summary>
+<summary><strong>Can I run multiple PHP versions at the same time?</strong></summary>
 
-Ja, erstelle mehrere PHP Container in docker-compose.yml:
+Yes, create multiple PHP containers in `docker-compose.yml`:
 ```yaml
 php81:
   build: ./php-8.1/
 php83:
   build: ./php-8.3/
 ```
-Dann in Apache VHosts unterschiedliche Proxy-Targets nutzen.
+Then use different proxy targets in Apache VHosts.
 </details>
 
 <details>
-<summary><strong>Funktioniert MeowHome mit anderen DNS Providern als Cloudflare?</strong></summary>
+<summary><strong>Does MeowHome work with DNS providers other than Cloudflare?</strong></summary>
 
-Certbot unterstützt viele Provider. Passe `certbot/Dockerfile` an:
+Certbot supports many providers. Adjust `certbot/Dockerfile`, for example:
 ```dockerfile
-RUN pip install certbot-dns-route53  # Beispiel AWS
+RUN pip install certbot-dns-route53  # Example AWS
 ```
 </details>
 
 <details>
-<summary><strong>Wie kann ich WordPress installieren?</strong></summary>
+<summary><strong>How can I install WordPress?</strong></summary>
 
 ```bash
-# 1. WordPress herunterladen
+# 1. Download WordPress
 cd ~/meowhome/htdocs/
 mkdir mysite.com
 cd mysite.com
@@ -837,12 +837,12 @@ wget https://wordpress.org/latest.tar.gz
 tar -xzf latest.tar.gz --strip-components=1
 rm latest.tar.gz
 
-# 2. Database erstellen
+# 2. Create database
 docker exec -it meowhome_db mysql -u root -p
 # CREATE DATABASE mysite_wp;
 # GRANT ALL ON mysite_wp.* TO 'app'@'%';
 
-# 3. Apache VHost erstellen (siehe Configuration)
+# 3. Create Apache VHost (see Configuration)
 # 4. Browser: http://mysite.com/wp-admin/install.php
 ```
 </details>
@@ -860,7 +860,7 @@ docker exec -it meowhome_db mysql -u root -p
 
 ## 📄 License
 
-MIT License - siehe [LICENSE](LICENSE) Datei
+MIT License – see the [LICENSE](LICENSE) file
 
 ---
 
@@ -878,11 +878,11 @@ MIT License - siehe [LICENSE](LICENSE) Datei
 
 ## 💖 Support this project
 
-If DGSM saves you time or helps you run your servers, please consider supporting development:
+If MeowHome saves you time or helps you run your servers, please consider supporting development:
 
 - [**GitHub Sponsors**](https://github.com/sponsors/meowztho)
 - [**Paypal**](paypal.me/farrnbacher)
-  
+
 ⭐ **Star this repo if it helped you!** ⭐
 
 </div>
