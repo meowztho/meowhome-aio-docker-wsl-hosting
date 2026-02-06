@@ -718,6 +718,33 @@ docker compose up -d
 sudo ./tools/ftp/meowftp.py apply
 ```
 
+## USEFUL COMMANDS
+
+```bash
+📊 Check status:  
+docker compose ps  
+docker compose logs -f
+
+🔍 FTP debugging:  
+./tools/ftp/debug-ftp.sh  
+docker logs -f meowhome_ftp
+
+👥 Manage FTP users:  
+./tools/ftp/meowftp.py list  
+./tools/ftp/meowftp.py passwd <user>  
+./tools/ftp/meowftp.py home <user> <path>
+
+🗄️ phpMyAdmin (local only):  
+http://127.0.0.1:8080
+
+🔧 Fix permissions:  
+./tools/ftp/fix-permissions.sh
+
+Restart after changes (vhost, ftp):
+docker compose restart php  
+docker compose restart web  
+docker compose restart ftp
+```
 ---
 
 ## 🤝 Contributing
