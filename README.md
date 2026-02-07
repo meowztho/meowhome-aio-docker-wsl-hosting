@@ -583,13 +583,13 @@ docker compose up -d
 If your system is affected by the WSL / Docker startup race condition, you may configure the warmup script to run automatically after startup.
 
 ⚠️ Important: cron is NOT enabled by default in WSL
-
+```cron
 Unlike traditional Linux systems:
 WSL does not enable cron by default
 in many cases, cron is not installed
 even if installed, it may not start automatically
 To use @reboot cron jobs in WSL, systemd must be enabled manually.
-
+```
 ### 1️⃣ Enable systemd in WSL
 
 Edit or create /etc/wsl.conf:
@@ -626,12 +626,12 @@ restart containers safely in the correct order
 Safe to run multiple times (no duplicate entries).
 
 ### 🔍 What this command does (short & precise)
-
+```cron
 crontab -l → lists existing cron jobs
 grep -v 'meowhome-warmup' → removes an old warmup entry if present
 echo "@reboot …" → adds the warmup job
 | crontab - → installs the updated crontab
-
+```
 ### ➖ Remove the cron job again
 
 If you no longer need the warmup restart, remove it with:
