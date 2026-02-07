@@ -578,6 +578,97 @@ docker compose build --no-cache
 docker compose up -d
 ```
 
+### 🔁 Automatic Execution After Startup (Optional)
+
+If your system is affected by the WSL / Docker startup race condition, you may configure the warmup script to run automatically after startup.
+
+⚠️ Important: cron is NOT enabled by default in WSL
+
+Unlike traditional Linux systems:
+WSL does not enable cron by default
+in many cases, cron is not installed
+even if installed, it may not start automatically
+To use @reboot cron jobs in WSL, systemd must be enabled manually.
+
+### 1️⃣ Enable systemd in WSL
+
+Edit or create /etc/wsl.conf:
+```bash
+[boot]
+systemd=true
+```
+
+
+Then restart WSL from Windows:
+```bash
+wsl --shutdown
+```
+
+### 2️⃣ Install and enable cron inside WSL
+```bash
+sudo apt-get update
+sudo apt-get install -y cron
+sudo systemctl enable --now cron
+```
+
+### 3️⃣ Add the warmup cron job (copy & paste)
+```bash
+( crontab -l 2>/dev/null | grep -v 'meowhome-warmup' ; \
+  echo "@reboot /bin/bash -lc 'sleep 20; \$HOME/meowhome/tools/warmup.sh' # meowhome-warmup" \
+) | crontab -
+```
+
+This will:
+
+wait 20 seconds after WSL / system startup
+run the warmup script once
+restart containers safely in the correct order
+Safe to run multiple times (no duplicate entries).
+
+### 🔍 What this command does (short & precise)
+
+crontab -l → lists existing cron jobs
+grep -v 'meowhome-warmup' → removes an old warmup entry if present
+echo "@reboot …" → adds the warmup job
+| crontab - → installs the updated crontab
+
+### ➖ Remove the cron job again
+
+If you no longer need the warmup restart, remove it with:
+```bash
+crontab -l | grep -v 'meowhome-warmup' | crontab -
+```
+
+This removes only the warmup entry and leaves all other cron jobs untouched.
+
+###⚠️ Note
+
+This project does not enable cron automatically.
+All system-level changes are intentionally left to the user.
+
+###❗ Why this is not enabled by default
+
+Not all systems are affected
+WSL startup behavior differs between Windows versions
+Docker Desktop startup timing varies
+Automatically modifying cron or system services would be intrusive
+For these reasons, the warmup mechanism is opt-in.
+
+###✅ When you need this workaround
+
+You likely need this if:
+containers work only after a manual restart
+bind mounts are empty on first boot
+restarting Docker “fixes” the issue
+Docker starts faster than WSL filesystem readiness
+
+###🧠 Technical Background (Short)
+
+Docker only checks container runtime availability
+Docker does not validate host mount readiness
+WSL mounts Windows paths asynchronously
+Result: containers may bind to paths that exist but are not yet fully initialized.
+
 ---
 
 ## 🎯 Best Practices
