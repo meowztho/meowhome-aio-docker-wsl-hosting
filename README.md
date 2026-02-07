@@ -641,12 +641,12 @@ crontab -l | grep -v 'meowhome-warmup' | crontab -
 
 This removes only the warmup entry and leaves all other cron jobs untouched.
 
-###⚠️ Note
+### ⚠️ Note
 
 This project does not enable cron automatically.
 All system-level changes are intentionally left to the user.
 
-###❗ Why this is not enabled by default
+### ❗ Why this is not enabled by default
 
 Not all systems are affected
 WSL startup behavior differs between Windows versions
@@ -654,7 +654,7 @@ Docker Desktop startup timing varies
 Automatically modifying cron or system services would be intrusive
 For these reasons, the warmup mechanism is opt-in.
 
-###✅ When you need this workaround
+### ✅ When you need this workaround
 
 You likely need this if:
 containers work only after a manual restart
@@ -662,7 +662,7 @@ bind mounts are empty on first boot
 restarting Docker “fixes” the issue
 Docker starts faster than WSL filesystem readiness
 
-###🧠 Technical Background (Short)
+### 🧠 Technical Background (Short)
 
 Docker only checks container runtime availability
 Docker does not validate host mount readiness
