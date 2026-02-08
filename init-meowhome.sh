@@ -3,12 +3,23 @@ set -euo pipefail
 
 # ============================================================
 # MeowHome Bootstrapper (Core + Tools + FTP Virtual Users)
-# Version: 2.0 (Fixed FTP Authentication)
+# Version: 2.0 (Fixed FTP Authentication + Permissions Hardening)
 # - erstellt ~/meowhome komplett
 # - Tools unter ./tools (modular erweiterbar)
 # - FTP: vsftpd Virtual Users + Tool (SQLite auf Host)
 # - phpMyAdmin nur auf 127.0.0.1 gebunden
 # - kopiert DNSUpdatecloudflare.py + certbot.py, wenn neben Script vorhanden
+#
+# FIX (Permissions / Ownership):
+# - verhindert dass FTP/Container den Host-Bind-Mount htdocs "übernimmt"
+# - setzt PUID/PGID in .env und nutzt sie in docker-compose (web/php)
+# - setzt vsftpd umask auf 002 (group-writable Uploads)
+# - entfernt chown -R ftp:ftp /var/www (zerstört Host-Ownership bei Bind-Mounts)
+# - Tool: ./tools/permissions_hardening.sh (wird bei Installation automatisch ausgeführt)
+#
+# NEW (Certbot/DNS optional):
+# - CERTBOT_ENABLED / DNS_UPDATER_ENABLED toggles (container idles when disabled)
+# - ACME_CHALLENGE=dns (default, Cloudflare DNS-01, wildcard) or ACME_CHALLENGE=http (HTTP-01 fallback, no wildcard)
 # ============================================================
 
 PROJECT_DIR="${1:-$HOME/meowhome}"
@@ -38,15 +49,11 @@ mkdir -p \
 
 # ----------------------------
 # Tools: Warmup (WSL Mount Race Fix)
-# - wartet auf Docker
-# - optional: checkt ob /var/www Mount "steht"
-# - restarted Container in definierter Reihenfolge
 # ----------------------------
 cat > "$PROJECT_DIR/tools/warmup.sh" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Project root (…/tools -> project root)
 BASE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$BASE"
 
@@ -59,7 +66,6 @@ log() { echo "[$(ts)] $*" | tee -a "$LOG"; }
 
 log "warmup: start (base=$BASE)"
 
-# 1) Wait for Docker daemon (WSL boot race)
 for i in $(seq 1 60); do
   if docker info >/dev/null 2>&1; then
     log "Docker is available."
@@ -72,11 +78,8 @@ for i in $(seq 1 60); do
   sleep 1
 done
 
-# 2) Optional: wait a bit for mounts to settle (WSL /mnt / bind timing)
 sleep 10
 
-# 3) Restart in gewünschter Reihenfolge:
-# db -> php -> web(apache) -> phpmyadmin -> dns_updater -> ftp -> certbot
 restart_one() {
   local name="$1"
   if docker ps -a --format '{{.Names}}' | grep -qx "$name"; then
@@ -99,9 +102,119 @@ log "warmup: done"
 SH
 chmod +x "$PROJECT_DIR/tools/warmup.sh"
 
+# ----------------------------
+# Tools: Permissions Hardening
+# ----------------------------
+cat > "$PROJECT_DIR/tools/permissions_hardening.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+
+log() { printf '%s\n' "$*"; }
+warn() { printf '%s\n' "WARN: $*" >&2; }
+have_cmd() { command -v "$1" >/dev/null 2>&1; }
+
+ensure_env_key() {
+  local env_file="$1"
+  local key="$2"
+  local value="$3"
+
+  if [[ ! -f "$env_file" ]]; then
+    warn "[env] missing .env at $env_file (skip)"
+    return 0
+  fi
+
+  if grep -qE "^${key}=" "$env_file"; then
+    log "[env] ${key} already present"
+    return 0
+  fi
+
+  printf '\n%s=%s\n' "$key" "$value" >> "$env_file"
+  log "[env] added ${key}=${value}"
+}
+
+fix_webroot_permissions() {
+  local webroot="$1"
+  local uid_now gid_now
+
+  if [[ ! -d "$webroot" ]]; then
+    warn "[perm] webroot not found at $webroot (skip)"
+    return 0
+  fi
+
+  uid_now="$(id -u)"
+  gid_now="$(id -g)"
+
+  log "[perm] ownership -> ${uid_now}:${gid_now} for $webroot"
+  sudo chown -R "${uid_now}:${gid_now}" "$webroot" 2>/dev/null || true
+
+  log "[perm] dirs: 2775 (setgid) | files: 664"
+  sudo find "$webroot" -type d -exec chmod 2775 {} \; 2>/dev/null || true
+  sudo find "$webroot" -type f -exec chmod 664 {} \; 2>/dev/null || true
+
+  if have_cmd setfacl; then
+    log "[perm] ACL available: setting default ACL (best-effort)"
+    sudo setfacl -R -m "u:${uid_now}:rwx" "$webroot" 2>/dev/null || true
+    sudo setfacl -R -d -m "u:${uid_now}:rwx" "$webroot" 2>/dev/null || true
+    sudo setfacl -R -m "o::rx" "$webroot" 2>/dev/null || true
+    sudo setfacl -R -d -m "o::rx" "$webroot" 2>/dev/null || true
+  else
+    log "[perm] setfacl not available: skipping ACL"
+  fi
+}
+
+usage() {
+  cat <<'EOF'
+Usage:
+  permissions_hardening.sh [--project DIR] --apply
+
+Options:
+  --project DIR   Root of meowhome project (default: script_dir/..)
+  --apply         Apply env + permissions
+EOF
+}
+
+main() {
+  local project=""
+  local apply="0"
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --project) project="${2:-}"; shift 2;;
+      --apply) apply="1"; shift;;
+      -h|--help) usage; exit 0;;
+      *) warn "Unknown arg: $1"; usage; exit 2;;
+    esac
+  done
+
+  if [[ -z "$project" ]]; then
+    local script_dir
+    script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    project="$(cd "$script_dir/.." && pwd)"
+  fi
+
+  if [[ "$apply" != "1" ]]; then
+    warn "Nothing done. Run with --apply"
+    exit 1
+  fi
+
+  local env_file="$project/.env"
+  local webroot="$project/htdocs"
+
+  log "[info] project: $project"
+  ensure_env_key "$env_file" "PUID" "$(id -u)"
+  ensure_env_key "$env_file" "PGID" "$(id -g)"
+
+  fix_webroot_permissions "$webroot"
+
+  log "[done] permissions hardening applied"
+}
+
+main "$@"
+SH
+chmod +x "$PROJECT_DIR/tools/permissions_hardening.sh"
 
 # ----------------------------
-# .gitignore (Secrets + Persistenz schützen)
+# .gitignore
 # ----------------------------
 cat > "$PROJECT_DIR/.gitignore" <<'GIT'
 .env
@@ -119,12 +232,16 @@ __pycache__/
 GIT
 
 # ----------------------------
-# .env.example (weitergebbar)
+# .env.example
 # ----------------------------
 cat > "$PROJECT_DIR/.env.example" <<'ENV'
 # ============================================================
 # MeowHome - Konfiguration (Template)
 # ============================================================
+
+# Host UID/GID (wird bei Installation automatisch ergänzt, falls fehlt)
+PUID=1000
+PGID=1000
 
 # Windows/LAN Host-IP (für Reverse Proxy Ziele, z.B. Jellyfin)
 WIN_HOST_IP=192.168.178.59
@@ -135,7 +252,28 @@ DOMAINS=example.com,test.de
 # Let's Encrypt Email
 LE_EMAIL=admin@example.com
 
+# ============================================================
+# Optional: Certbot + DNS Updater toggles (Defaults = ON)
+# ============================================================
+
+# Certbot Container aktiv?
+CERTBOT_ENABLED=true
+
+# DNS Updater Container aktiv?
+DNS_UPDATER_ENABLED=true
+
+# ACME Challenge Methode:
+# - dns  = DNS-01 (Default, Wildcard möglich, benötigt Provider Token)
+# - http = HTTP-01 (Fallback, benötigt Port 80 extern, KEIN Wildcard)
+ACME_CHALLENGE=dns
+
+# DNS Provider für DNS-01 (aktuell implementiert: cloudflare)
+DNS_PROVIDER=cloudflare
+
 # Cloudflare API Token (Zone:DNS Edit)
+# Nur nötig wenn:
+# - ACME_CHALLENGE=dns und DNS_PROVIDER=cloudflare
+# - oder DNS_UPDATER_ENABLED=true
 CLOUDFLARE_API_TOKEN=PASTE_TOKEN_HERE
 
 # DNS propagation wait (Sekunden)
@@ -170,30 +308,21 @@ DB_PASSWORD=change-me
 # ------------------------------------------------------------
 FTP_ENABLED=true
 
-# Passive Ports (müssen am Router weitergeleitet werden)
 FTP_PASV_MIN=21000
 FTP_PASV_MAX=21010
 
-# WICHTIG:
-# FTP_PUBLIC_HOST ist NICHT deine interne IP.
-# Setze hier die öffentliche IP oder einen DNS Namen, unter dem du extern erreichbar bist.
-# (192.168.178.59 ist intern und nur für LAN-Tests geeignet.)
+# Öffentliche IP/Domain (extern erreichbar)
 FTP_PUBLIC_HOST=CHANGE-ME.example.com
 
-# FTPS (TLS) aktivieren?
-# vsftpd erwartet YES/NO (nicht true/false)
+# FTPS (TLS) aktivieren? vsftpd erwartet YES/NO
 FTP_TLS=NO
 
 # Domain, deren Let's Encrypt Certs für FTPS genutzt werden
 FTP_CERT_DOMAIN=example.com
 
-# Dateirechte: Host UID/GID für Ordner unter htdocs (WSL meist 1000:1000)
+# Dateirechte: Host UID/GID
 FTP_HOST_UID=1000
 FTP_HOST_GID=1000
-
-# WICHTIG für vsftpd: Berechtigungen setzen
-# Ordner unter /var/www müssen korrekte Berechtigungen haben
-
 ENV
 
 # ----------------------------
@@ -202,6 +331,28 @@ ENV
 if [ ! -f "$PROJECT_DIR/.env" ]; then
   cp "$PROJECT_DIR/.env.example" "$PROJECT_DIR/.env"
 fi
+
+# .env: PUID/PGID automatisch ergänzen (falls fehlt)
+if ! grep -q '^PUID=' "$PROJECT_DIR/.env"; then
+  printf '\nPUID=%s\n' "$(id -u)" >> "$PROJECT_DIR/.env"
+fi
+if ! grep -q '^PGID=' "$PROJECT_DIR/.env"; then
+  printf 'PGID=%s\n' "$(id -g)" >> "$PROJECT_DIR/.env"
+fi
+
+# .env: neue Toggle Keys ergänzen (falls fehlt) – überschreibt NICHT bestehende Werte
+append_env_if_missing() {
+  local key="$1"
+  local value="$2"
+  if ! grep -qE "^${key}=" "$PROJECT_DIR/.env"; then
+    printf '\n%s=%s\n' "$key" "$value" >> "$PROJECT_DIR/.env"
+  fi
+}
+
+append_env_if_missing "CERTBOT_ENABLED" "true"
+append_env_if_missing "DNS_UPDATER_ENABLED" "true"
+append_env_if_missing "ACME_CHALLENGE" "dns"
+append_env_if_missing "DNS_PROVIDER" "cloudflare"
 
 # ----------------------------
 # Beispiel Webroot
@@ -236,8 +387,6 @@ CONF
 
 # ----------------------------
 # Apache VHosts (Example)
-# Hinweis: SSL-Block kann fehlschlagen, wenn Certs noch nicht existieren.
-# Wenn nötig, den 443-Block temporär auskommentieren.
 # ----------------------------
 cat > "$PROJECT_DIR/apache/vhosts/10-example.conf" <<'CONF'
 <VirtualHost *:80>
@@ -273,7 +422,6 @@ CONF
 
 cat > "$PROJECT_DIR/apache/vhosts/20-templates.conf" <<'CONF'
 # Reverse Proxy Template (Windows/LAN Ziel)
-#
 # Beispiel Jellyfin:
 #
 # <VirtualHost *:80>
@@ -362,19 +510,15 @@ PASV_ADDR="$(resolve_ipv4 "$PASV_HOST")"
 
 echo "[FTP] Starting vsftpd with PASV address: $PASV_ADDR"
 
-# vsftpd.conf mit korrekten Einstellungen
 cat > "$CFG_DIR/vsftpd.conf" <<EOF
-# Daemon
 listen=YES
 listen_ipv6=NO
 background=NO
 
-# Logging (wichtig für Debug)
 xferlog_enable=YES
 log_ftp_protocol=YES
 vsftpd_log_file=/var/log/vsftpd.log
 
-# Security
 anonymous_enable=NO
 local_enable=YES
 write_enable=YES
@@ -382,29 +526,24 @@ local_umask=002
 use_localtime=YES
 seccomp_sandbox=NO
 
-# Chroot
 chroot_local_user=YES
 allow_writeable_chroot=YES
 secure_chroot_dir=/var/run/vsftpd/empty
 
-# Virtual Users (KRITISCH!)
 pam_service_name=vsftpd_virtual
 guest_enable=YES
 guest_username=ftp
 virtual_use_local_privs=YES
 user_config_dir=${CFG_DIR}/users.d
 
-# Default local_root (wird per-user überschrieben)
 local_root=/var/www
 
-# Passive Mode
 pasv_enable=YES
 pasv_min_port=${FTP_PASV_MIN:-21000}
 pasv_max_port=${FTP_PASV_MAX:-21010}
 pasv_address=${PASV_ADDR}
 pasv_addr_resolve=NO
 
-# TLS/SSL
 ssl_enable=${FTP_TLS:-NO}
 rsa_cert_file=/etc/ssl/private/vsftpd.pem
 rsa_private_key_file=/etc/ssl/private/vsftpd.pem
@@ -415,7 +554,6 @@ EOF
 chown root:root "$CFG_DIR/vsftpd.conf"
 chmod 600 "$CFG_DIR/vsftpd.conf"
 
-# PAM Config (KRITISCH: crypt=crypt muss gesetzt sein!)
 cat > /etc/pam.d/vsftpd_virtual <<EOF
 auth required pam_userdb.so db=${CFG_DIR}/users crypt=crypt
 account required pam_userdb.so db=${CFG_DIR}/users crypt=crypt
@@ -428,11 +566,9 @@ chmod 644 /etc/pam.d/vsftpd_virtual
 echo "[FTP] PAM config:"
 cat /etc/pam.d/vsftpd_virtual
 
-# Guest user "ftp" erstellen (UID/GID auf Host matchen)
 HOST_UID="${PUID:-${FTP_HOST_UID:-1000}}"
 HOST_GID="${PGID:-${FTP_HOST_GID:-1000}}"
 
-# group anlegen/angleichen
 if getent group ftp >/dev/null 2>&1; then
   CUR_GID="$(getent group ftp | awk -F: '{print $3}')"
   if [ "$CUR_GID" != "$HOST_GID" ]; then
@@ -442,7 +578,6 @@ else
   groupadd -g "$HOST_GID" ftp 2>/dev/null || groupadd ftp 2>/dev/null || true
 fi
 
-# user anlegen/angleichen
 if id ftp >/dev/null 2>&1; then
   CUR_UID="$(id -u ftp)"
   CUR_GID="$(id -g ftp)"
@@ -458,7 +593,6 @@ fi
 
 echo "[FTP] ftp user mapped to ${HOST_UID}:${HOST_GID}"
 
-# Warte auf users.db (max 30 Sekunden)
 echo "[FTP] Waiting for users.db..."
 for i in $(seq 1 30); do
   if [ -f "$CFG_DIR/users.db" ]; then
@@ -477,7 +611,6 @@ for i in $(seq 1 30); do
   sleep 1
 done
 
-# Permissions
 chown root:root "$CFG_DIR/users.db" 2>/dev/null || true
 chmod 600 "$CFG_DIR/users.db" 2>/dev/null || true
 
@@ -487,9 +620,6 @@ if [ -d "$CFG_DIR/users.d" ]; then
   find "$CFG_DIR/users.d" -maxdepth 1 -type f -exec chown root:root {} \; 2>/dev/null || true
   find "$CFG_DIR/users.d" -maxdepth 1 -type f -exec chmod 600 {} \; 2>/dev/null || true
 fi
-
-# /var/www ownership
-#chown -R ftp:ftp /var/www 2>/dev/null || true
 
 echo "[FTP] Config complete, starting vsftpd..."
 echo "[FTP] users.db status:"
@@ -547,7 +677,6 @@ from typing import Tuple
 BASE = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 DB_PATH = os.path.join(BASE, "ftp", "users.sqlite")
 HTDOCS = os.path.join(BASE, "htdocs")
-FTP_DATA = os.path.join(BASE, "ftp", "data")
 ENV_PATH = os.path.join(BASE, ".env")
 
 def sh(cmd: list[str]) -> None:
@@ -589,7 +718,6 @@ def db() -> sqlite3.Connection:
     return con
 
 def hash_pw_sha512_crypt(password: str) -> str:
-    """Erstellt SHA512-crypt Hash (kompatibel mit PAM userdb crypt=crypt)"""
     out = sh_out(["openssl", "passwd", "-6", password])
     if not out.startswith("$6$"):
         raise RuntimeError("Password hash generation failed.")
@@ -715,7 +843,6 @@ def docker_compose_up_ftp() -> None:
     sh(["docker", "compose", "-f", compose_file, "up", "-d", "ftp"])
 
 def wait_for_container(max_wait: int = 30) -> None:
-    """Warte bis FTP Container bereit ist"""
     print("⏳ Warte auf FTP Container...")
     for i in range(max_wait):
         try:
@@ -731,9 +858,6 @@ def wait_for_container(max_wait: int = 30) -> None:
             time.sleep(1)
 
 def apply() -> None:
-    """Aktiviert User-Änderungen im FTP Server"""
-    
-    # Root check
     if os.geteuid() != 0:
         print("⚠️  apply benötigt sudo/root")
         print("Starte erneut mit sudo...")
@@ -744,12 +868,10 @@ def apply() -> None:
     print("=" * 60)
     print()
 
-    # 1. Container starten
     print("1️⃣  Starte FTP Container...")
     docker_compose_up_ftp()
     wait_for_container()
 
-    # 2. Lade Users aus DB
     con = db()
     rows = list(con.execute(
         "SELECT username, pass_hash, home_rel FROM users WHERE enabled=1 ORDER BY username"
@@ -761,24 +883,20 @@ def apply() -> None:
 
     print(f"2️⃣  Gefunden: {len(rows)} aktive User")
 
-    # 3. Erstelle users.txt content
     users_txt_content = ""
     for username, pass_hash, _ in rows:
         users_txt_content += f"{username}\n{pass_hash}\n"
 
-    # 4. Schreibe users.txt direkt in Container
     print("3️⃣  Schreibe users.txt in Container...")
     subprocess.run(
-        ["docker", "exec", "-i", "meowhome_ftp", "sh", "-c", 
+        ["docker", "exec", "-i", "meowhome_ftp", "sh", "-c",
          "cat > /etc/vsftpd/users.txt"],
         input=users_txt_content.encode(),
         check=True
     )
 
-    # 5. Konvertiere zu Berkeley DB
     print("4️⃣  Erstelle users.db...")
-    
-    # Prüfe welcher db_load verfügbar ist
+
     try:
         subprocess.run(
             ["docker", "exec", "meowhome_ftp", "which", "db5.3_load"],
@@ -787,26 +905,24 @@ def apply() -> None:
         db_cmd = "db5.3_load"
     except subprocess.CalledProcessError:
         db_cmd = "db_load"
-    
+
     subprocess.run([
         "docker", "exec", "meowhome_ftp", "sh", "-c",
         f"cd /etc/vsftpd && {db_cmd} -T -t hash -f users.txt users.db"
     ], check=True)
 
-    # 6. Erstelle User-Configs
     print("5️⃣  Erstelle User-Configs...")
     for username, _, home_rel in rows:
         local_root = "/var/www" if not home_rel else f"/var/www/{home_rel}"
         config_content = f"local_root={local_root}\n"
-        
+
         subprocess.run([
             "docker", "exec", "-i", "meowhome_ftp", "sh", "-c",
             f"cat > /etc/vsftpd/users.d/{username}"
         ], input=config_content.encode(), check=True)
-        
+
         ensure_home_dir(home_rel)
 
-    # 7. Setze Permissions
     print("6️⃣  Setze Permissions...")
     subprocess.run([
         "docker", "exec", "meowhome_ftp", "sh", "-c",
@@ -816,21 +932,17 @@ def apply() -> None:
         chown root:root /etc/vsftpd/users.d
         chmod 755 /etc/vsftpd/users.d
         find /etc/vsftpd/users.d -type f -exec chmod 600 {} \\;
-        #chown -R ftp:ftp /var/www
         """
     ], check=True)
 
-    # 8. Restart FTP
     print("7️⃣  Restart FTP Service...")
     subprocess.run([
         "docker", "compose", "-f", os.path.join(BASE, "docker-compose.yml"),
         "restart", "ftp"
     ], check=True)
 
-    # Warte kurz
     time.sleep(2)
 
-    # 9. Verify
     print()
     print("=" * 60)
     print("✅ Apply erfolgreich!")
@@ -860,21 +972,15 @@ def usage() -> None:
         "  meowftp.py home <user> <htdocs_subfolder_or_empty>",
         "  meowftp.py apply",
         "",
-        "Beispiele:",
-        "  meowftp.py add admin \"\"              # Vollzugriff auf alle Domains",
-        "  meowftp.py add webmaster example.com  # Nur example.com Ordner",
-        "  meowftp.py passwd admin               # Passwort ändern",
-        "  meowftp.py apply                      # Änderungen aktivieren (benötigt sudo)",
-        ""
     ]))
 
 def main() -> int:
     if len(sys.argv) < 2:
         usage()
         return 2
-    
+
     cmd = sys.argv[1].lower()
-    
+
     try:
         if cmd == "list":
             cmd_list()
@@ -929,7 +1035,6 @@ echo "MeowFTP Debug Report"
 echo "======================================"
 echo ""
 
-# Container Status
 echo "1️⃣  Container Status:"
 echo "--------------------------------------"
 if docker ps --format '{{.Names}}' | grep -q meowhome_ftp; then
@@ -940,49 +1045,41 @@ else
 fi
 echo ""
 
-# Logs
 echo "2️⃣  FTP Logs (letzte 30 Zeilen):"
 echo "--------------------------------------"
 docker logs --tail 30 meowhome_ftp 2>&1 || echo "Keine Logs verfügbar"
 echo ""
 
-# vsftpd.conf
 echo "3️⃣  vsftpd.conf:"
 echo "--------------------------------------"
 docker exec meowhome_ftp cat /etc/vsftpd/vsftpd.conf 2>/dev/null | head -30 || echo "❌ Nicht lesbar"
 echo ""
 
-# PAM Config
 echo "4️⃣  PAM Config:"
 echo "--------------------------------------"
 docker exec meowhome_ftp cat /etc/pam.d/vsftpd_virtual 2>/dev/null || echo "❌ Nicht lesbar"
 echo ""
 
-# DB Files
 echo "5️⃣  Database Files:"
 echo "--------------------------------------"
 docker exec meowhome_ftp ls -la /etc/vsftpd/ 2>/dev/null | grep -E "users|\.db|\.txt" || echo "❌ Nicht verfügbar"
 echo ""
 
-# DB Content (ersten 10 Einträge)
 echo "6️⃣  User Database Content:"
 echo "--------------------------------------"
 docker exec meowhome_ftp sh -c "db5.3_dump /etc/vsftpd/users.db 2>/dev/null || db_dump /etc/vsftpd/users.db 2>/dev/null" | head -20 || echo "❌ Kann DB nicht lesen"
 echo ""
 
-# User Configs
 echo "7️⃣  User Configs:"
 echo "--------------------------------------"
 docker exec meowhome_ftp ls -la /etc/vsftpd/users.d/ 2>/dev/null || echo "❌ Nicht verfügbar"
 echo ""
 
-# Ports
 echo "8️⃣  Port Bindings:"
 echo "--------------------------------------"
 netstat -tlnp 2>/dev/null | grep -E ":21 |:2100" || ss -tlnp 2>/dev/null | grep -E ":21 |:2100" || echo "⚠️  netstat/ss nicht verfügbar"
 echo ""
 
-# Test Login (wenn curl verfügbar)
 if command -v curl >/dev/null 2>&1; then
   echo "9️⃣  FTP Connection Test:"
   echo "--------------------------------------"
@@ -990,7 +1087,6 @@ if command -v curl >/dev/null 2>&1; then
   echo ""
 fi
 
-# Permissions
 echo "🔟 /var/www Permissions:"
 echo "--------------------------------------"
 docker exec meowhome_ftp ls -la /var/www 2>/dev/null | head -10 || echo "❌ Nicht verfügbar"
@@ -1011,17 +1107,15 @@ set -euo pipefail
 
 cd "$(dirname "$0")/../.."
 
-echo "Fixing FTP permissions..."
+echo "Fixing webroot permissions (host)..."
 
-# Host permissions
-sudo chown -R 1000:1000 htdocs/ 2>/dev/null || true
-sudo find htdocs/ -type d -exec chmod 755 {} \; 2>/dev/null || true
-sudo find htdocs/ -type f -exec chmod 644 {} \; 2>/dev/null || true
+UID_NOW="$(id -u)"
+GID_NOW="$(id -g)"
 
-# Container permissions
-#docker exec meowhome_ftp chown -R ftp:ftp /var/www 2>/dev/null || true
+sudo chown -R "${UID_NOW}:${GID_NOW}" htdocs/ 2>/dev/null || true
+sudo find htdocs/ -type d -exec chmod 2775 {} \; 2>/dev/null || true
+sudo find htdocs/ -type f -exec chmod 664 {} \; 2>/dev/null || true
 
-# vsftpd config
 docker exec meowhome_ftp chown root:root /etc/vsftpd/vsftpd.conf 2>/dev/null || true
 docker exec meowhome_ftp chmod 600 /etc/vsftpd/vsftpd.conf 2>/dev/null || true
 
@@ -1031,7 +1125,9 @@ SH
 chmod +x "$PROJECT_DIR/tools/ftp/fix-permissions.sh"
 
 # ----------------------------
-# docker-compose.yml (inkl. phpMyAdmin nur lokal)
+# docker-compose.yml
+# - php läuft als Host-UID/GID (verhindert mixed ownership bei Bind-Mounts)
+# - certbot bekommt optional webroot mount für HTTP-01
 # ----------------------------
 cat > "$PROJECT_DIR/docker-compose.yml" <<'YAML'
 services:
@@ -1058,6 +1154,7 @@ services:
       context: ./php
       dockerfile: Dockerfile
     container_name: meowhome_php
+    user: "${PUID}:${PGID}"
     volumes:
       - ./htdocs:/var/www:rw
       - ./php/custom.ini:/usr/local/etc/php/conf.d/99-custom.ini:ro
@@ -1099,6 +1196,7 @@ services:
     volumes:
       - ./letsencrypt:/etc/letsencrypt
       - ./state:/state
+      - ./htdocs:/var/www:rw
       - /var/run/docker.sock:/var/run/docker.sock
     restart: unless-stopped
 
@@ -1197,56 +1295,24 @@ cat > "$PROJECT_DIR/certbot/run.sh" <<'SH'
 #!/bin/sh
 set -eu
 
-if [ -z "${CLOUDFLARE_API_TOKEN:-}" ]; then
-  echo "CLOUDFLARE_API_TOKEN fehlt"
-  exit 1
+# CERTBOT_ENABLED=false -> container exists but does nothing
+if [ "${CERTBOT_ENABLED:-true}" != "true" ]; then
+  echo "[certbot] CERTBOT_ENABLED=false -> idle"
+  while true; do sleep 365d; done
 fi
+
 if [ -z "${LE_EMAIL:-}" ]; then
-  echo "LE_EMAIL fehlt"
+  echo "[certbot] LE_EMAIL fehlt"
   exit 1
 fi
 if [ -z "${DOMAINS:-}" ]; then
-  echo "DOMAINS fehlt"
+  echo "[certbot] DOMAINS fehlt"
   exit 1
 fi
 
 PROP="${CF_PROPAGATION_SECONDS:-30}"
-
-CF_INI="/tmp/cf.ini"
-echo "dns_cloudflare_api_token = ${CLOUDFLARE_API_TOKEN}" > "${CF_INI}"
-chmod 600 "${CF_INI}"
-
-issue_wildcard_for_zone() {
-  zone="$1"
-  echo "[certbot] issuing wildcard for zone: $zone"
-  certbot certonly \
-    --non-interactive --agree-tos \
-    --email "${LE_EMAIL}" \
-    --dns-cloudflare --dns-cloudflare-credentials "${CF_INI}" \
-    --dns-cloudflare-propagation-seconds "${PROP}" \
-    -d "${zone}" -d "*.${zone}" || true
-}
-
-issue_hosts() {
-  if [ -z "${HOSTS:-}" ]; then
-    echo "[certbot] WILDCARD=false aber HOSTS ist leer"
-    return 0
-  fi
-
-  echo "[certbot] issuing hosts: ${HOSTS}"
-  args=""
-  for h in $(echo "$HOSTS" | tr ',' ' '); do
-    args="$args -d $h"
-  done
-
-  # shellcheck disable=SC2086
-  certbot certonly \
-    --non-interactive --agree-tos \
-    --email "${LE_EMAIL}" \
-    --dns-cloudflare --dns-cloudflare-credentials "${CF_INI}" \
-    --dns-cloudflare-propagation-seconds "${PROP}" \
-    $args || true
-}
+CH="${ACME_CHALLENGE:-dns}"
+PROVIDER="${DNS_PROVIDER:-cloudflare}"
 
 reload_apache() {
   echo "[certbot] apache reload/restart"
@@ -1256,15 +1322,82 @@ reload_apache() {
   docker restart meowhome_apache >/dev/null 2>&1 || true
 }
 
-W="${WILDCARD:-true}"
-for zone in $(echo "$DOMAINS" | tr ',' ' '); do
-  if [ "$W" = "true" ]; then
-    issue_wildcard_for_zone "$zone"
-  else
-    issue_hosts
-    break
+issue_dns_cloudflare() {
+  if [ -z "${CLOUDFLARE_API_TOKEN:-}" ]; then
+    echo "[certbot] CLOUDFLARE_API_TOKEN fehlt (ACME_CHALLENGE=dns, DNS_PROVIDER=cloudflare)"
+    exit 1
   fi
-done
+
+  CF_INI="/tmp/cf.ini"
+  echo "dns_cloudflare_api_token = ${CLOUDFLARE_API_TOKEN}" > "${CF_INI}"
+  chmod 600 "${CF_INI}"
+
+  issue_wildcard_for_zone() {
+    zone="$1"
+    echo "[certbot] issuing wildcard for zone: $zone"
+    certbot certonly \
+      --non-interactive --agree-tos \
+      --email "${LE_EMAIL}" \
+      --dns-cloudflare --dns-cloudflare-credentials "${CF_INI}" \
+      --dns-cloudflare-propagation-seconds "${PROP}" \
+      -d "${zone}" -d "*.${zone}" || true
+  }
+
+  issue_hosts() {
+    if [ -z "${HOSTS:-}" ]; then
+      echo "[certbot] WILDCARD=false aber HOSTS ist leer"
+      return 0
+    fi
+
+    echo "[certbot] issuing hosts: ${HOSTS}"
+    args=""
+    for h in $(echo "$HOSTS" | tr ',' ' '); do
+      args="$args -d $h"
+    done
+
+    # shellcheck disable=SC2086
+    certbot certonly \
+      --non-interactive --agree-tos \
+      --email "${LE_EMAIL}" \
+      --dns-cloudflare --dns-cloudflare-credentials "${CF_INI}" \
+      --dns-cloudflare-propagation-seconds "${PROP}" \
+      $args || true
+  }
+
+  W="${WILDCARD:-true}"
+  for zone in $(echo "$DOMAINS" | tr ',' ' '); do
+    if [ "$W" = "true" ]; then
+      issue_wildcard_for_zone "$zone"
+    else
+      issue_hosts
+      break
+    fi
+  done
+}
+
+issue_http01_webroot() {
+  echo "[certbot] HTTP-01 webroot mode (no wildcard)."
+  for zone in $(echo "$DOMAINS" | tr ',' ' '); do
+    WEBROOT="/var/www/${zone}"
+    mkdir -p "$WEBROOT/.well-known/acme-challenge"
+    echo "[certbot] issuing cert for: $zone (webroot=$WEBROOT)"
+    certbot certonly \
+      --non-interactive --agree-tos \
+      --email "${LE_EMAIL}" \
+      --webroot -w "$WEBROOT" \
+      -d "$zone" || true
+  done
+}
+
+if [ "$CH" = "dns" ]; then
+  if [ "$PROVIDER" != "cloudflare" ]; then
+    echo "[certbot] DNS_PROVIDER='$PROVIDER' ist nicht implementiert. Nutze DNS_PROVIDER=cloudflare oder ACME_CHALLENGE=http."
+    exit 1
+  fi
+  issue_dns_cloudflare
+else
+  issue_http01_webroot
+fi
 
 reload_apache
 
@@ -1294,6 +1427,13 @@ DOCKER
 cat > "$PROJECT_DIR/dns-updater/run.sh" <<'SH'
 #!/bin/sh
 set -eu
+
+# DNS_UPDATER_ENABLED=false -> container exists but does nothing
+if [ "${DNS_UPDATER_ENABLED:-true}" != "true" ]; then
+  echo "[dns-updater] DNS_UPDATER_ENABLED=false -> idle"
+  while true; do sleep 365d; done
+fi
+
 mkdir -p /state
 export STATE_PATH="${STATE_PATH:-/state/state.json}"
 export LOG_PATH="${LOG_PATH:-/state/dns_updater.log}"
@@ -1324,12 +1464,17 @@ PY
 fi
 
 # ----------------------------
+# Automatisch: Permissions Hardening anwenden
+# ----------------------------
+"$PROJECT_DIR/tools/permissions_hardening.sh" --project "$PROJECT_DIR" --apply || true
+
+# ----------------------------
 # Abschluss
 # ----------------------------
 cat <<OUT
 
 ================================================================
-✅ MeowHome v2.0 erfolgreich erstellt/aktualisiert!
+✅ MeowHome erfolgreich erstellt/aktualisiert!
 ================================================================
 
 Installation: $PROJECT_DIR
@@ -1338,24 +1483,25 @@ WICHTIGE SCHRITTE:
 ==================
 
 1️⃣  KONFIGURATION
-   Öffne und fülle die .env Datei aus:
-   
    nano $PROJECT_DIR/.env
-   
+
    Wichtig:
-   - DOMAINS (deine Domains)
-   - LE_EMAIL (für Let's Encrypt)
-   - CLOUDFLARE_API_TOKEN
-   - FTP_PUBLIC_HOST (deine öffentliche IP/Domain!)
+   - DOMAINS
+   - LE_EMAIL
+   - CERTBOT_ENABLED / DNS_UPDATER_ENABLED (optional)
+   - ACME_CHALLENGE (dns=default / http=fallback)
+   - CLOUDFLARE_API_TOKEN (nur nötig wenn ACME_CHALLENGE=dns oder DNS_UPDATER_ENABLED=true)
+   - FTP_PUBLIC_HOST (öffentliche IP/Domain!)
    - DB Passwörter ändern
 
 2️⃣  PORTS PRÜFEN
-   Stelle sicher dass diese Ports frei sind:
    - 80, 443 (HTTP/HTTPS)
    - 21 (FTP)
    - 21000-21010 (FTP Passive)
-   
-   Diese Ports müssen auch am Router weitergeleitet sein!
+
+   Hinweis:
+   - ACME_CHALLENGE=http benötigt Port 80 extern erreichbar
+   - HTTP-01 unterstützt KEIN Wildcard (*.domain)
 
 3️⃣  SYSTEM STARTEN
    cd $PROJECT_DIR
@@ -1363,70 +1509,28 @@ WICHTIGE SCHRITTE:
 
 4️⃣  FTP BENUTZER ERSTELLEN
    cd $PROJECT_DIR
-   
-   # User für eine spezifische Domain:
    ./tools/ftp/meowftp.py add webmaster example.com
-   
-   # User mit Vollzugriff auf alle Domains:
    ./tools/ftp/meowftp.py add admin ""
-   
-   # Änderungen aktivieren (benötigt sudo!):
    ./tools/ftp/meowftp.py apply
-   
-   #DB Host mariadb
 
 5️⃣  ZERTIFIKATE
-   Certbot läuft automatisch, prüfe die Logs:
    docker logs -f meowhome_certbot
-   
+
+   Ohne Cloudflare:
+   - DNS_UPDATER_ENABLED=false
+   - ACME_CHALLENGE=http
+   - (Wildcard geht dann nicht)
+
    Für FTPS (nach erfolgreicher Cert-Erstellung):
    ./ftp/build-ftps-pem.sh example.com
-   
    Dann in .env: FTP_TLS=YES setzen
    docker compose restart ftp
 
 NÜTZLICHE BEFEHLE:
 ==================
-
-📊 Status prüfen:
-   docker compose ps
-   docker compose logs -f
-
-🔍 FTP Debug:
-   ./tools/ftp/debug-ftp.sh
-   docker logs -f meowhome_ftp
-
-👥 FTP User verwalten:
-   ./tools/ftp/meowftp.py list
-   ./tools/ftp/meowftp.py passwd <user>
-   ./tools/ftp/meowftp.py home <user> <path>
-
-🗄️  phpMyAdmin (nur lokal):
-   http://127.0.0.1:8080
-
-🔧 Permissions Fix:
-   ./tools/ftp/fix-permissions.sh
-   
-   Restart nach Änderungen (vhost, ftp)
-   docker compose restart php
-   docker compose restart web
-   docker compose restart ftp
-
-FEHLERBEHEBUNG:
-===============
-
-FTP Login schlägt fehl?
-→ ./tools/ftp/debug-ftp.sh
-→ Prüfe ob apply ausgeführt wurde
-→ Prüfe docker logs meowhome_ftp
-
-Apache startet nicht?
-→ Kommentiere SSL-VHosts aus bis Certs da sind
-→ docker logs meowhome_apache
-
-================================================================
-📚 Dokumentation: https://github.com/meowztho/meowhome-aio-docker-wsl-hosting
-💬 Support: Issues auf GitHub
-================================================================
+docker compose ps
+docker compose logs -f
+./tools/warmup.sh
+./tools/permissions_hardening.sh --apply
 
 OUT
