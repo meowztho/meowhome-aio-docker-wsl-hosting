@@ -2,7 +2,7 @@
 
 **All-in-One Docker-based Web Hosting Stack with FTP, SSL, and DNS Management**
 
-A fully automated hosting setup for multiple domains with Apache, PHP, MariaDB, Let's Encrypt SSL certificates, an optional Cloudflare DNS updater, and FTP virtual users.
+A fully automated hosting setup for multiple domains with Apache, PHP, MariaDB, Let's Encrypt SSL certificates, a Cloudflare DNS updater, and FTP virtual users.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Docker](https://img.shields.io/badge/Docker-Ready-blue.svg)](https://www.docker.com/)
@@ -10,13 +10,6 @@ A fully automated hosting setup for multiple domains with Apache, PHP, MariaDB, 
 [![FTP](https://img.shields.io/badge/FTP-vsftpd-green.svg)](https://security.appspot.com/vsftpd.html)
 
 ---
-
-> **v2.2.0 (Rollback release)**
-> - FIX: FTP write permissions caused by UID/GID mismatch
-> - CHANGE: Apache runs as root, PHP-FPM as host UID/GID
-> - NEW: Certbot / DNS updater can be disabled via `.env`
-> - NEW: HTTP-01 ACME fallback (no Cloudflare required)
-
 
 ## 📋 Table of Contents
 
@@ -29,7 +22,7 @@ A fully automated hosting setup for multiple domains with Apache, PHP, MariaDB, 
 - [SSL/TLS Certificates](#-ssltls-certificates)
 - [Troubleshooting](#-troubleshooting)
 - [Best Practices](#-best-practices)
-- [USEFUL COMMANDS](#useful-commands)
+- [Contributing](#-contributing)
 - [License](#-license)
 
 ---
@@ -74,7 +67,7 @@ A fully automated hosting setup for multiple domains with Apache, PHP, MariaDB, 
 ### Network
 - **Ports**: 80, 443, 21, 21000-21010 must be available
 - **Port forwarding** on your router for external reachability
-- **Cloudflare account** with API token (Zone: DNS Edit)
+- **Cloudflare account** with API token (Zone: DNS Edit) (only required if ACME_CHALLENGE=dns or DNS_UPDATER_ENABLED=true)
 
 ### Optional
 - **WSL2** (Windows users can run MeowHome in WSL2)
@@ -113,6 +106,13 @@ LE_EMAIL=admin@example.com
 
 # Cloudflare API token
 CLOUDFLARE_API_TOKEN=your_cloudflare_token_here
+
+# Enable certbot, but use HTTP-01 instead of DNS-01
+CERTBOT_ENABLED=true
+ACME_CHALLENGE=http
+
+# DNS updater off (no Cloudflare needed)
+DNS_UPDATER_ENABLED=false
 
 # FTP: public IP or domain
 FTP_PUBLIC_HOST=ftp.example.com
@@ -222,17 +222,6 @@ ls -la letsencrypt/live/
 
 ## ⚙️ Configuration
 
-### Certbot / DNS (v2.2.0 additions)
-```env
-CERTBOT_ENABLED=true
-DNS_UPDATER_ENABLED=true
-ACME_CHALLENGE=dns   # dns | http
-DNS_PROVIDER=cloudflare
-```
-- `ACME_CHALLENGE=dns`: DNS-01 (Cloudflare, wildcard support)
-- `ACME_CHALLENGE=http`: HTTP-01 fallback (port 80 required, no wildcard)
-
-
 ### `.env` File – All Options
 
 ```bash
@@ -248,7 +237,7 @@ DOMAINS=example.com,example.net
 A_RECORDS_example_com=example.com,www.example.com,shop.example.com
 A_RECORDS_example_net=example.net,www.example.net
 
-# Cloudflare Settings
+# # Cloudflare Settings (only required if ACME_CHALLENGE=dns or DNS_UPDATER_ENABLED=true)
 CLOUDFLARE_API_TOKEN=your_token_here
 PROXIED_DEFAULT=true
 PROXIED_OVERRIDES=mail.example.com=false
@@ -297,6 +286,24 @@ DB_ROOT_PASSWORD=super_secure_root_password
 DB_NAME=app
 DB_USER=app
 DB_PASSWORD=secure_app_password
+
+# ============================================================
+# Optional: Certbot + DNS Updater toggles (v2.2.0)
+# ============================================================
+
+# Enable/disable certbot container (container will idle when disabled)
+CERTBOT_ENABLED=true
+
+# Enable/disable DNS updater (container will idle when disabled)
+DNS_UPDATER_ENABLED=true
+
+# ACME challenge method:
+# - dns  = DNS-01 (default; wildcard possible; needs DNS provider token)
+# - http = HTTP-01 (fallback; requires port 80; no wildcard)
+ACME_CHALLENGE=dns
+
+# DNS provider for DNS-01 (currently implemented: cloudflare)
+DNS_PROVIDER=cloudflare
 ```
 
 ### Apache VHosts
@@ -451,15 +458,25 @@ Port:      21
 
 ### Let's Encrypt Wildcard Certificates
 
-MeowHome uses the **Cloudflare DNS-01 challenge** for wildcard certificates:
+### Challenge Modes (DNS-01 vs HTTP-01)
 
+**DNS-01 (Default, recommended):**
+- `ACME_CHALLENGE=dns`
+- supports wildcard certificates (`*.domain`)
+- requires `CLOUDFLARE_API_TOKEN` (current implementation: Cloudflare)
+
+**HTTP-01 (Fallback, no DNS API required):**
+- `ACME_CHALLENGE=http`
+- **no wildcard** support
+- requires inbound **port 80** reachable from the internet
+- Certbot uses the webroot under: `htdocs/<domain>/.well-known/acme-challenge/`
+
+Recommended settings for HTTP-01:
 ```bash
-# Certbot runs automatically and creates certs for:
-# - example.com
-# - *.example.com
-# - example.net
-# - *.example.net
-```
+ACME_CHALLENGE=http
+DNS_UPDATER_ENABLED=false
+WILDCARD=false
+
 
 #### Manual Certbot Restart
 
@@ -505,13 +522,6 @@ docker compose restart ftp
 
 ## 🐛 Troubleshooting
 
-### v2.2.0 – UID/GID mismatch fix
-- FTP guest user is mapped to host UID/GID
-- PHP-FPM runs as host UID/GID
-- Apache runs as root (required for `/var/run/apache2` and ports 80/443)
-- Prevents bind-mount ownership corruption and FTP upload errors
-
-
 ### FTP login fails (530 Login incorrect)
 
 ```bash
@@ -553,6 +563,12 @@ docker compose restart web
 ```
 
 ### Permission denied on FTP upload
+
+**v2.2.0 note (UID/GID mismatch fix):**
+MeowHome maps the FTP guest user to the host UID/GID to prevent write permission issues on bind mounts.
+- PHP-FPM runs as the host user (`PUID:PGID`)
+- FTP guest user is mapped to the host UID/GID
+- Apache runs as root (required for `/var/run/apache2` and ports 80/443)
 
 ```bash
 # 1. Use fix permissions tool
@@ -602,97 +618,6 @@ docker compose logs ftp
 docker compose build --no-cache
 docker compose up -d
 ```
-
-### 🔁 Automatic Execution After Startup (Optional)
-
-If your system is affected by the WSL / Docker startup race condition, you may configure the warmup script to run automatically after startup.
-
-⚠️ Important: cron is NOT enabled by default in WSL
-```cron
-Unlike traditional Linux systems:
-WSL does not enable cron by default
-in many cases, cron is not installed
-even if installed, it may not start automatically
-To use @reboot cron jobs in WSL, systemd must be enabled manually.
-```
-### 1️⃣ Enable systemd in WSL
-
-Edit or create /etc/wsl.conf:
-```bash
-[boot]
-systemd=true
-```
-
-
-Then restart WSL from Windows:
-```bash
-wsl --shutdown
-```
-
-### 2️⃣ Install and enable cron inside WSL
-```bash
-sudo apt-get update
-sudo apt-get install -y cron
-sudo systemctl enable --now cron
-```
-
-### 3️⃣ Add the warmup cron job (copy & paste)
-```bash
-( crontab -l 2>/dev/null | grep -v 'meowhome-warmup' ; \
-  echo "@reboot /bin/bash -lc 'sleep 20; \$HOME/meowhome/tools/warmup.sh' # meowhome-warmup" \
-) | crontab -
-```
-
-This will:
-
-wait 20 seconds after WSL / system startup
-run the warmup script once
-restart containers safely in the correct order
-Safe to run multiple times (no duplicate entries).
-
-### 🔍 What this command does (short & precise)
-```cron
-crontab -l → lists existing cron jobs
-grep -v 'meowhome-warmup' → removes an old warmup entry if present
-echo "@reboot …" → adds the warmup job
-| crontab - → installs the updated crontab
-```
-### ➖ Remove the cron job again
-
-If you no longer need the warmup restart, remove it with:
-```bash
-crontab -l | grep -v 'meowhome-warmup' | crontab -
-```
-
-This removes only the warmup entry and leaves all other cron jobs untouched.
-
-### ⚠️ Note
-
-This project does not enable cron automatically.
-All system-level changes are intentionally left to the user.
-
-### ❗ Why this is not enabled by default
-
-Not all systems are affected
-WSL startup behavior differs between Windows versions
-Docker Desktop startup timing varies
-Automatically modifying cron or system services would be intrusive
-For these reasons, the warmup mechanism is opt-in.
-
-### ✅ When you need this workaround
-
-You likely need this if:
-containers work only after a manual restart
-bind mounts are empty on first boot
-restarting Docker “fixes” the issue
-Docker starts faster than WSL filesystem readiness
-
-### 🧠 Technical Background (Short)
-
-Docker only checks container runtime availability
-Docker does not validate host mount readiness
-WSL mounts Windows paths asynchronously
-Result: containers may bind to paths that exist but are not yet fully initialized.
 
 ---
 
@@ -982,8 +907,9 @@ MIT License – see the [LICENSE](LICENSE) file
 
 ## 📧 Support
 
-- **Issues**: [GitHub Issues](https://github.com/meowztho/meowhome/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/meowztho/meowhome/discussions)
+- **Issues**: [GitHub Issues](https://github.com/yourusername/meowhome/issues)
+- **Discussions**: [GitHub Discussions](https://github.com/yourusername/meowhome/discussions)
+- **Email**: admin@example.com
 
 ---
 
