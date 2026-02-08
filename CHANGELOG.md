@@ -1,6 +1,6 @@
 # Changelog
 
-## v2.0.1
+## v2.2.0
 ### Fixed
 - FTP write permissions broken by UID/GID mismatch
 - Apache startup failure when running as non-root
