@@ -2,7 +2,7 @@
 
 **All-in-One Docker-based Web Hosting Stack with FTP, SSL, and DNS Management**
 
-A fully automated hosting setup for multiple domains with Apache, PHP, MariaDB, Let's Encrypt SSL certificates, a Cloudflare DNS updater, and FTP virtual users.
+A fully automated hosting setup for multiple domains with Apache, PHP, MariaDB, Let's Encrypt SSL certificates, an optional Cloudflare DNS updater, and FTP virtual users.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Docker](https://img.shields.io/badge/Docker-Ready-blue.svg)](https://www.docker.com/)
@@ -10,6 +10,13 @@ A fully automated hosting setup for multiple domains with Apache, PHP, MariaDB, 
 [![FTP](https://img.shields.io/badge/FTP-vsftpd-green.svg)](https://security.appspot.com/vsftpd.html)
 
 ---
+
+> **v2.2.0 (Rollback release)**
+> - FIX: FTP write permissions caused by UID/GID mismatch
+> - CHANGE: Apache runs as root, PHP-FPM as host UID/GID
+> - NEW: Certbot / DNS updater can be disabled via `.env`
+> - NEW: HTTP-01 ACME fallback (no Cloudflare required)
+
 
 ## 📋 Table of Contents
 
@@ -214,6 +221,17 @@ ls -la letsencrypt/live/
 ---
 
 ## ⚙️ Configuration
+
+### Certbot / DNS (v2.2.0 additions)
+```env
+CERTBOT_ENABLED=true
+DNS_UPDATER_ENABLED=true
+ACME_CHALLENGE=dns   # dns | http
+DNS_PROVIDER=cloudflare
+```
+- `ACME_CHALLENGE=dns`: DNS-01 (Cloudflare, wildcard support)
+- `ACME_CHALLENGE=http`: HTTP-01 fallback (port 80 required, no wildcard)
+
 
 ### `.env` File – All Options
 
@@ -486,6 +504,13 @@ docker compose restart ftp
 ---
 
 ## 🐛 Troubleshooting
+
+### v2.2.0 – UID/GID mismatch fix
+- FTP guest user is mapped to host UID/GID
+- PHP-FPM runs as host UID/GID
+- Apache runs as root (required for `/var/run/apache2` and ports 80/443)
+- Prevents bind-mount ownership corruption and FTP upload errors
+
 
 ### FTP login fails (530 Login incorrect)
 
