@@ -35,7 +35,7 @@ mkdir -p \
   "$PROJECT_DIR/letsencrypt" \
   "$PROJECT_DIR/state" \
   "$PROJECT_DIR/legacy"
-  
+
 # ----------------------------
 # Tools: Warmup (WSL Mount Race Fix)
 # - wartet auf Docker
@@ -98,6 +98,7 @@ restart_one "meowhome_certbot"
 log "warmup: done"
 SH
 chmod +x "$PROJECT_DIR/tools/warmup.sh"
+
 
 # ----------------------------
 # .gitignore (Secrets + Persistenz schützen)
@@ -192,7 +193,7 @@ FTP_HOST_GID=1000
 
 # WICHTIG für vsftpd: Berechtigungen setzen
 # Ordner unter /var/www müssen korrekte Berechtigungen haben
-# Beispiel: chown -R ftp:ftp /var/www/example.com
+
 ENV
 
 # ----------------------------
@@ -377,7 +378,7 @@ vsftpd_log_file=/var/log/vsftpd.log
 anonymous_enable=NO
 local_enable=YES
 write_enable=YES
-local_umask=022
+local_umask=002
 use_localtime=YES
 seccomp_sandbox=NO
 
@@ -427,11 +428,35 @@ chmod 644 /etc/pam.d/vsftpd_virtual
 echo "[FTP] PAM config:"
 cat /etc/pam.d/vsftpd_virtual
 
-# Guest user "ftp" erstellen
-if ! id ftp >/dev/null 2>&1; then
-  useradd -m -d /var/www -s /usr/sbin/nologin ftp || true
-  echo "[FTP] Created user 'ftp'"
+# Guest user "ftp" erstellen (UID/GID auf Host matchen)
+HOST_UID="${PUID:-${FTP_HOST_UID:-1000}}"
+HOST_GID="${PGID:-${FTP_HOST_GID:-1000}}"
+
+# group anlegen/angleichen
+if getent group ftp >/dev/null 2>&1; then
+  CUR_GID="$(getent group ftp | awk -F: '{print $3}')"
+  if [ "$CUR_GID" != "$HOST_GID" ]; then
+    groupmod -g "$HOST_GID" ftp 2>/dev/null || true
+  fi
+else
+  groupadd -g "$HOST_GID" ftp 2>/dev/null || groupadd ftp 2>/dev/null || true
 fi
+
+# user anlegen/angleichen
+if id ftp >/dev/null 2>&1; then
+  CUR_UID="$(id -u ftp)"
+  CUR_GID="$(id -g ftp)"
+  if [ "$CUR_UID" != "$HOST_UID" ]; then
+    usermod -u "$HOST_UID" ftp 2>/dev/null || true
+  fi
+  if [ "$CUR_GID" != "$HOST_GID" ]; then
+    usermod -g "$HOST_GID" ftp 2>/dev/null || true
+  fi
+else
+  useradd -m -u "$HOST_UID" -g "$HOST_GID" -d /var/www -s /usr/sbin/nologin ftp 2>/dev/null || true
+fi
+
+echo "[FTP] ftp user mapped to ${HOST_UID}:${HOST_GID}"
 
 # Warte auf users.db (max 30 Sekunden)
 echo "[FTP] Waiting for users.db..."
@@ -464,7 +489,7 @@ if [ -d "$CFG_DIR/users.d" ]; then
 fi
 
 # /var/www ownership
-chown -R ftp:ftp /var/www 2>/dev/null || true
+#chown -R ftp:ftp /var/www 2>/dev/null || true
 
 echo "[FTP] Config complete, starting vsftpd..."
 echo "[FTP] users.db status:"
@@ -791,7 +816,7 @@ def apply() -> None:
         chown root:root /etc/vsftpd/users.d
         chmod 755 /etc/vsftpd/users.d
         find /etc/vsftpd/users.d -type f -exec chmod 600 {} \\;
-        chown -R ftp:ftp /var/www
+        #chown -R ftp:ftp /var/www
         """
     ], check=True)
 
@@ -994,7 +1019,7 @@ sudo find htdocs/ -type d -exec chmod 755 {} \; 2>/dev/null || true
 sudo find htdocs/ -type f -exec chmod 644 {} \; 2>/dev/null || true
 
 # Container permissions
-docker exec meowhome_ftp chown -R ftp:ftp /var/www 2>/dev/null || true
+#docker exec meowhome_ftp chown -R ftp:ftp /var/www 2>/dev/null || true
 
 # vsftpd config
 docker exec meowhome_ftp chown root:root /etc/vsftpd/vsftpd.conf 2>/dev/null || true
@@ -1400,7 +1425,7 @@ Apache startet nicht?
 → docker logs meowhome_apache
 
 ================================================================
-📚 Dokumentation: https://github.com/your-repo/meowhome
+📚 Dokumentation: https://github.com/meowztho/meowhome-aio-docker-wsl-hosting
 💬 Support: Issues auf GitHub
 ================================================================
 
