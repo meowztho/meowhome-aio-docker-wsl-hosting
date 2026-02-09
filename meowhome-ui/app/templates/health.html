@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block content %}
+<head>
+  <meta charset="utf-8">
+  <title>Health - MeowHome UI</title>
+  <meta http-equiv="cache-control" content="no-store" />
+</head>
+<body>
+  <h2>Health Check</h2>
+
+  <h3>Docker</h3>
+  <p>Status: <strong>{{ "OK" if docker_ok else "ERROR" }}</strong></p>
+  {% if not docker_ok %}
+    <pre>{{ docker_msg }}</pre>
+  {% endif %}
+
+  <h3>Container</h3>
+  <table border="1" cellpadding="6" cellspacing="0">
+    <thead>
+      <tr>
+        <th>Name</th>
+        <th>Status</th>
+        <th>Health</th>
+        <th>RestartCount</th>
+        <th>Image</th>
+        <th>Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for c in containers %}
+      <tr>
+        <td>{{ c.name }}</td>
+        <td>{{ c.status }}</td>
+        <td>{{ c.health }}</td>
+        <td>{{ c.restart_count }}</td>
+        <td>{{ c.image }}</td>
+        <td>
+          <form action="/container/{{ c.name }}/action" method="post" style="display:inline;">
+            <input type="hidden" name="action" value="restart">
+            <button type="submit">Restart</button>
+          </form>
+          <a href="/container/{{ c.name }}/logs?lines=200">Logs</a>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <p style="margin-top:16px;">
+    Tipp: Wenn etwas "restarting" ist, zuerst Logs anschauen.
+  </p>
+</body>
+{% endblock %}

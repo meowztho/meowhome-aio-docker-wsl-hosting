@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% block content %}
+  <title>Backup - MeowHome UI</title>
+  <meta http-equiv="cache-control" content="no-store" />
+</head>
+<body>
+  <h2>Backup</h2>
+
+  <h3>Backup erstellen</h3>
+  <form action="/backup/create" method="post">
+    <label>
+      <input type="checkbox" name="with_htdocs" value="true">
+      htdocs mit sichern (kann sehr groß sein)
+    </label>
+    <br><br>
+    <button type="submit">Create Backup</button>
+  </form>
+
+  {% if last_file %}
+    <h4>Neues Backup</h4>
+    <p>
+      Datei: <strong>{{ last_file }}</strong><br>
+      Download: <a href="/backup/download?file={{ last_file }}">Download</a>
+    </p>
+  {% endif %}
+
+  {% if last_output %}
+    <h4>Ausgabe</h4>
+    <pre style="white-space:pre-wrap;">{{ last_output }}</pre>
+  {% endif %}
+
+  <h3>Vorhandene Backups</h3>
+  {% if backups|length == 0 %}
+    <p>Keine Backups gefunden.</p>
+  {% else %}
+    <table border="1" cellpadding="6" cellspacing="0">
+      <thead>
+        <tr>
+          <th>Datei</th>
+          <th>Größe</th>
+          <th>Datum</th>
+          <th>Download</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for b in backups %}
+        <tr>
+          <td>{{ b.name }}</td>
+          <td>{{ b.size }}</td>
+          <td>{{ b.mtime | int }}</td>
+          <td><a href="/backup/download?file={{ b.name }}">Download</a></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <p>Hinweis: Datum ist Unix-Timestamp.</p>
+  {% endif %}
+
+  <h3>Restore</h3>
+  <p>Restore läuft bewusst nicht über die UI. Nutze:</p>
+  <pre>~/meowhome/tools/backup/restore.sh ~/meowhome/backups/&lt;backup-file&gt;</pre>
+</body>
+{% endblock %}

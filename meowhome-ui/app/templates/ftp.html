@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>FTP Users</h2>
+
+<div class="card">
+  <h3>Current users</h3>
+  <pre>{{ list_out }}</pre>
+</div>
+
+<div class="card">
+  <h3>Add user</h3>
+  <form method="post" action="/ftp/add">
+    <div>
+      <label>Username</label><br>
+      <input name="username" required>
+    </div>
+    <div>
+      <label>Password</label><br>
+      <input name="password" required>
+    </div>
+    <div>
+      <label>Home (relative under htdocs, optional)</label><br>
+      <input name="home_rel" placeholder="e.g. shop.it-phi.de">
+    </div>
+    <p class="muted">Nach Add wird automatisch apply ausgeführt.</p>
+    <button class="btn" type="submit">Add + Apply</button>
+  </form>
+</div>
+
+<div class="card">
+  <h3>Delete user</h3>
+  <form method="post" action="/ftp/del">
+    <input name="username" placeholder="username" required>
+    <button class="btn" type="submit">Delete + Apply</button>
+  </form>
+</div>
+
+<div class="card">
+  <h3>Enable/Disable user</h3>
+  <form method="post" action="/ftp/enable">
+    <input name="username" placeholder="username" required>
+    <select name="enabled">
+      <option value="1">Enable</option>
+      <option value="0">Disable</option>
+    </select>
+    <button class="btn" type="submit">Set + Apply</button>
+  </form>
+</div>
+
+{% endblock %}

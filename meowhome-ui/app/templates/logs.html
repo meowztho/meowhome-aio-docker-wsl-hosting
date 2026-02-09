@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Logs: {{ name }}</h2>
+<form method="get" action="/container/{{ name }}/logs">
+  <label>Lines:</label>
+  <input type="number" name="lines" value="{{ lines }}" min="10" max="5000">
+  <button class="btn" type="submit">Refresh</button>
+</form>
+<pre>{{ logtext }}</pre>
+{% endblock %}

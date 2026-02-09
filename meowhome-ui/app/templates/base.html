@@ -1,0 +1,31 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>{{ title if title else "MeowHome UI" }}</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body { font-family: Arial, sans-serif; margin: 20px; }
+    .row { display: flex; gap: 12px; flex-wrap: wrap; }
+    .card { border: 1px solid #ddd; border-radius: 8px; padding: 12px; min-width: 280px; }
+    .muted { color: #666; }
+    pre { background: #111; color: #eee; padding: 12px; overflow: auto; border-radius: 8px; }
+    input, textarea, select, button { padding: 8px; }
+    textarea { width: 100%; height: 520px; font-family: monospace; }
+    a { text-decoration: none; }
+    .nav a { margin-right: 10px; }
+    .btn { cursor: pointer; }
+  </style>
+</head>
+<body>
+  <div class="nav">
+    <a href="/">Dashboard</a>
+    <a href="/ftp">FTP</a>
+    <a href="/vhosts">VHosts</a>
+    <a href="/health">Health</a>
+    <a href="/backup">Backup</a>
+  </div>
+  <hr>
+  {% block content %}{% endblock %}
+</body>
+</html>

@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Edit VHost: {{ file }}</h2>
+
+<form method="post" action="/vhosts/save">
+  <input type="hidden" name="file" value="{{ file }}">
+  <textarea name="content">{{ content }}</textarea>
+  <p class="muted">Beim Speichern: Backup, apachectl -t, graceful reload. Bei Fehler Rollback.</p>
+  <button class="btn" type="submit">Save</button>
+  <a href="/vhosts">Cancel</a>
+</form>
+
+{% endblock %}

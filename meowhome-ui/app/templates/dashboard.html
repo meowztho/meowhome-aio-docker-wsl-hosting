@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>MeowHome Dashboard</h2>
+<p class="muted">Project: {{ project_dir }}</p>
+
+<div class="card">
+  <h3>Compose</h3>
+  <form method="post" action="/compose/action">
+    <button class="btn" name="action" value="pull">docker compose pull</button>
+    <button class="btn" name="action" value="build">docker compose build</button>
+    <button class="btn" name="action" value="up">docker compose up -d</button>
+    <button class="btn" name="action" value="recreate">up -d --force-recreate</button>
+  </form>
+</div>
+
+<div class="card">
+  <h3>Certbot / DNS</h3>
+  <form method="post" action="/certbot/renew" style="display:inline;">
+    <button class="btn">Certbot renew now</button>
+  </form>
+  <form method="post" action="/dns/run" style="display:inline;">
+    <button class="btn">DNS updater run now</button>
+  </form>
+</div>
+
+<h3>Container</h3>
+<div class="row">
+  {% for c in containers %}
+  <div class="card">
+    <div><strong>{{ c.name }}</strong></div>
+    <div class="muted">status: {{ c.status }}</div>
+    <div class="muted">image: {{ c.image }}</div>
+
+    <form method="post" action="/container/{{ c.name }}/action" style="margin-top:8px;">
+      <button class="btn" name="action" value="start">Start</button>
+      <button class="btn" name="action" value="stop">Stop</button>
+      <button class="btn" name="action" value="restart">Restart</button>
+      <a href="/container/{{ c.name }}/logs?lines=200">Logs</a>
+    </form>
+  </div>
+  {% endfor %}
+</div>
+{% endblock %}

@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Apache VHosts</h2>
+
+<div class="card">
+  <h3>VHost files</h3>
+  {% if files and files|length > 0 %}
+    <ul>
+      {% for f in files %}
+      <li><a href="/vhosts/edit?file={{ f }}">{{ f }}</a></li>
+      {% endfor %}
+    </ul>
+  {% else %}
+    <p class="muted">Keine .conf Dateien gefunden in apache/vhosts/</p>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h3>New file</h3>
+  <form method="get" action="/vhosts/edit">
+    <input name="file" placeholder="example.com.conf" required>
+    <button class="btn" type="submit">Create/Edit</button>
+  </form>
+</div>
+
+{% endblock %}
