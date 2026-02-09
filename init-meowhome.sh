@@ -8,7 +8,7 @@ set -euo pipefail
 # - Tools unter ./tools (modular erweiterbar)
 # - FTP: vsftpd Virtual Users + Tool (SQLite auf Host)
 # - phpMyAdmin nur auf 127.0.0.1 gebunden
-# - kopiert DNSUpdatecloudflare.py + certbot.py, wenn neben Script vorhanden
+# - kopiert DNSUpdatecloudflare.py wenn neben Script vorhanden
 #
 # FIX (Permissions / Ownership):
 # - verhindert dass FTP/Container den Host-Bind-Mount htdocs "übernimmt"
