@@ -434,6 +434,21 @@ def ftp_add(
 
     if not username:
         raise HTTPException(status_code=400, detail="username leer")
+    
+    # Input validation: username = alphanumeric, underscore, hyphen
+    if not all(c.isalnum() or c in "_-" for c in username):
+        raise HTTPException(status_code=400, detail="username nur alphanumeric, _, - erlaubt")
+    if len(username) > 32:
+        raise HTTPException(status_code=400, detail="username zu lang (max 32 chars)")
+    
+    # home_rel validation (if provided): only relative paths allowed
+    if home_rel:
+        if ".." in home_rel:
+            raise HTTPException(status_code=400, detail="home_rel: parent directory (..) nicht erlaubt")
+        if home_rel.startswith("/"):
+            raise HTTPException(status_code=400, detail="home_rel: absolute Pfade (/) nicht erlaubt, nur relative")
+        if any(c.isspace() for c in home_rel):
+            raise HTTPException(status_code=400, detail="home_rel: keine Leerzeichen erlaubt")
 
     res_add = sh(["python", meowftp_py(), "add", username, home_rel, password], cwd=PROJECT_DIR, timeout=60)
     res_home = sh(["python", meowftp_py(), "home", username, home_rel], cwd=PROJECT_DIR, timeout=60)
@@ -457,6 +472,14 @@ def ftp_del(
     user: str = Depends(require_auth)
 ):
     username = username.strip()
+    
+    # Input validation
+    if not username:
+        raise HTTPException(status_code=400, detail="username leer")
+    if not all(c.isalnum() or c in "_-" for c in username):
+        raise HTTPException(status_code=400, detail="username nur alphanumeric, _, - erlaubt")
+    if len(username) > 32:
+        raise HTTPException(status_code=400, detail="username zu lang (max 32 chars)")
     res_del = sh(["python", meowftp_py(), "del", username], cwd=PROJECT_DIR, timeout=60)
     res_apply = sh(["python", meowftp_py(), "apply"], cwd=PROJECT_DIR, timeout=600)
 
@@ -479,6 +502,14 @@ def ftp_enable(
 ):
     username = username.strip()
     enabled = enabled.strip().lower()
+    
+    # Input validation
+    if not username:
+        raise HTTPException(status_code=400, detail="username leer")
+    if not all(c.isalnum() or c in "_-" for c in username):
+        raise HTTPException(status_code=400, detail="username nur alphanumeric, _, - erlaubt")
+    if len(username) > 32:
+        raise HTTPException(status_code=400, detail="username zu lang (max 32 chars)")
 
     cmd = "enable" if enabled in ("1", "true", "yes", "on") else "disable"
     res = sh(["python", meowftp_py(), cmd, username], cwd=PROJECT_DIR, timeout=60)
@@ -517,10 +548,21 @@ def vhosts(request: Request, user: str = Depends(require_auth)):
 @app.get("/vhosts/edit", response_class=HTMLResponse)
 def vhosts_edit(request: Request, file: str, user: str = Depends(require_auth)):
     file = file.strip()
-    full = os.path.join(VHOST_DIR, file)
+    if not file.endswith(".conf"):
+        raise HTTPException(status_code=400, detail="Nur .conf erlaubt")
+    
+    # Path traversal prevention: resolve() ensures path is within VHOST_DIR
+    try:
+        vhost_base = pathlib.Path(VHOST_DIR).resolve()
+        full_path = (vhost_base / file).resolve()
+        if not str(full_path).startswith(str(vhost_base)):
+            raise HTTPException(status_code=403, detail="Zugriff verweigert")
+    except Exception as e:
+        raise HTTPException(status_code=403, detail="Ungültiger Dateipfad")
+    
     content = ""
-    if os.path.exists(full):
-        content = pathlib.Path(full).read_text(encoding="utf-8", errors="replace")
+    if full_path.exists():
+        content = full_path.read_text(encoding="utf-8", errors="replace")
     return templates.TemplateResponse("vhosts_edit.html", {
         "request": request,
         "user": user,
@@ -539,7 +581,16 @@ def vhosts_save(
     if not file.endswith(".conf"):
         raise HTTPException(status_code=400, detail="Nur .conf erlaubt")
 
-    full = os.path.join(VHOST_DIR, file)
+    # Path traversal prevention
+    try:
+        vhost_base = pathlib.Path(VHOST_DIR).resolve()
+        full_path = (vhost_base / file).resolve()
+        if not str(full_path).startswith(str(vhost_base)):
+            raise HTTPException(status_code=403, detail="Zugriff verweigert")
+    except Exception as e:
+        raise HTTPException(status_code=403, detail="Ungültiger Dateipfad")
+    
+    full = str(full_path)
     bak = backup_file(full)
     safe_write_file(full, content)
 
