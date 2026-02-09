@@ -53,8 +53,93 @@ A fully automated hosting setup for multiple domains with Apache, PHP, MariaDB, 
 - **debug-ftp.sh**: comprehensive diagnostics
 - **fix-permissions.sh**: auto-repair for permissions
 - **build-ftps-pem.sh**: SSL cert converter
+- **backup.sh**: Backup Tool
+- **restore.sh**: Restore Tool
 
 ---
+## 🔧 Web UI (MeowHome UI)
+
+MeowHome includes an optional local-only Web UI designed as a control center for administrators who prefer not to work directly with the shell.
+
+The UI is not exposed to the internet by default and is intended to be used only:
+
+locally (127.0.0.1)
+
+or from the same network / via VPN
+
+### Features
+
+- **Dashboard**
+  - Overview of all meowhome_* containers
+  - Start / Stop / Restart individual containers
+  - Quick access to container logs
+  - Health Check
+  - Docker availability check
+  - Status and health of all MeowHome containers
+  - Restart count and quick log access
+  - Useful for diagnosing startup or restart issues
+
+- **FTP Management (UI-backed)**
+  - Create, delete, enable and disable FTP users
+  - Uses the existing meowftp.py tool internally
+  - Automatically applies changes after modifications
+  - Safe handling of container restarts (race-condition aware)
+
+- **VHost Management**
+  - Edit Apache VirtualHost files directly in the browser
+  - Automatic config test (apachectl -t)
+  - Safe rollback on invalid configuration
+  - Graceful reload without full container restart
+ 
+- **Backup (UI-triggered, restore via shell)**
+  - One-click creation of full system backups
+  - Includes:
+    - All MariaDB databases
+    - All MariaDB users and privileges (including user-created DBs via phpMyAdmin)
+    - Apache vhosts & snippets
+    - FTP user database
+    - Let’s Encrypt certificates
+    - .env configuration
+  - Optional inclusion of htdocs/ (disabled by default)
+  - Backups are stored under:
+```bash
+~/meowhome/backups/
+```
+
+### 🔒 Restore is intentionally not available via the UI
+Restoring a backup is done via a dedicated shell script to avoid accidental data loss and to ensure safe container shutdown.
+
+---
+## Backup & Restore (New)
+### Create a Backup (via UI or CLI)
+
+- **Via Web UI:**
+```bash
+http://127.0.0.1:9090/backup
+```
+
+- **Via CLI:**
+```bash
+~/meowhome/tools/backup/backup.sh
+```
+
+- **With webroot included:**
+```bash
+~/meowhome/tools/backup/backup.sh --with-htdocs
+```
+- **Restore a Backup (CLI only)**
+```bash
+~/meowhome/tools/backup/restore.sh \
+  ~/meowhome/backups/meowhome-backup-YYYYmmdd-HHMMSS.tar.gz
+```
+
+This will:
+
+1. Stop all containers
+2. Restore configuration and data
+3. Start MariaDB and import all databases including users/grants
+4. Start the full stack again
+
 
 ## 🔧 Requirements
 
@@ -71,7 +156,7 @@ A fully automated hosting setup for multiple domains with Apache, PHP, MariaDB, 
 
 ### Optional
 - **WSL2** (Windows users can run MeowHome in WSL2)
-
+---
 ---
 
 ## 🚀 Quick Start
