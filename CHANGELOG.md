@@ -1,5 +1,12 @@
 # Changelog
 
+## v2.3.1
+- FIX: FTP `home_rel` Validation angepasst, um legitime relative Pfade korrekt zu akzeptieren
+- FIX: Vermeidung von False-Positives bei `home_rel` (z. B. durch naive `..` Erkennung)
+- IMPROVED: Robustere Input-Validierung ohne Beeinträchtigung der bestehenden UI-Funktionalität
+- SECURITY: Validation bleibt strikt gegen Path Traversal und absolute Pfade
+
+
 ## v2.3.0
 - NEW: Local Web UI (MeowHome UI) as a central control panel
 - NEW: Dashboard with container status and lifecycle controls
