@@ -41,6 +41,7 @@ mkdir -p \
   "$PROJECT_DIR/ftp/data/users.d" \
   "$PROJECT_DIR/ftp/ssl" \
   "$PROJECT_DIR/tools/ftp" \
+  "$PROJECT_DIR/tools/backup" \
   "$PROJECT_DIR/tools/apache" \
   "$PROJECT_DIR/db" \
   "$PROJECT_DIR/letsencrypt" \
@@ -101,6 +102,239 @@ restart_one "meowhome_certbot"
 log "warmup: done"
 SH
 chmod +x "$PROJECT_DIR/tools/warmup.sh"
+
+# ----------------------------
+# Tools: Restore
+# ----------------------------
+cat > "$PROJECT_DIR/tools/backup/restore.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+
+PROJECT_DIR="${MEOWHOME_PROJECT_DIR:-$HOME/meowhome}"
+BACKUP_TAR="${1:-}"
+
+if [[ -z "${BACKUP_TAR}" || ! -f "${BACKUP_TAR}" ]]; then
+  echo "Usage: $0 /pfad/zu/meowhome-backup-YYYYmmdd-HHMMSS.tar.gz" >&2
+  exit 1
+fi
+
+compose() {
+  if docker compose version >/dev/null 2>&1; then
+    docker compose "$@"
+  else
+    docker-compose "$@"
+  fi
+}
+
+TMP="$(mktemp -d)"
+cleanup() { rm -rf "${TMP}"; }
+trap cleanup EXIT
+
+echo "[restore] Backup: ${BACKUP_TAR}"
+echo "[restore] Temp: ${TMP}"
+
+tar -C "${TMP}" -xzf "${BACKUP_TAR}"
+
+if [[ ! -f "${TMP}/db/all-databases.sql.gz" ]]; then
+  echo "ERROR: db/all-databases.sql.gz fehlt im Backup." >&2
+  exit 1
+fi
+if [[ ! -f "${TMP}/project.tar.gz" ]]; then
+  echo "ERROR: project.tar.gz fehlt im Backup." >&2
+  exit 1
+fi
+
+echo "[restore] Stack stoppen..."
+cd "${PROJECT_DIR}"
+compose down
+
+echo "[restore] Projektfiles entpacken..."
+tar -C "${TMP}" -xzf "${TMP}/project.tar.gz"
+
+# Jetzt liegt alles unter ${TMP}/project/...
+if [[ ! -d "${TMP}/project" ]]; then
+  echo "ERROR: project/ fehlt nach Entpacken." >&2
+  exit 1
+fi
+
+# Rückspielen (überschreiben)
+rsync -a --delete "${TMP}/project/" "${PROJECT_DIR}/"
+
+# Optional: htdocs
+if [[ -f "${TMP}/htdocs.tar.gz" ]]; then
+  echo "[restore] htdocs zurückspielen..."
+  tar -C "${PROJECT_DIR}" -xzf "${TMP}/htdocs.tar.gz"
+else
+  echo "[restore] htdocs nicht im Backup, überspringe."
+fi
+
+# Root-Passwort nach Restore aus .env
+DB_ROOT_PASSWORD=""
+if [[ -f "${PROJECT_DIR}/.env" ]]; then
+  DB_ROOT_PASSWORD="$(grep -E '^DB_ROOT_PASSWORD=' "${PROJECT_DIR}/.env" | head -n1 | cut -d= -f2- || true)"
+fi
+DB_ROOT_PASSWORD="${DB_ROOT_PASSWORD%\"}"
+DB_ROOT_PASSWORD="${DB_ROOT_PASSWORD#\"}"
+
+echo "[restore] DB starten..."
+compose up -d mariadb
+
+echo "[restore] Warte auf MariaDB..."
+for i in {1..60}; do
+  if docker exec meowhome_db sh -lc "mariadb-admin ping -uroot -p\"${DB_ROOT_PASSWORD}\" --silent" >/dev/null 2>&1; then
+    echo "[restore] MariaDB ready."
+    break
+  fi
+  sleep 2
+  if [[ "$i" -eq 60 ]]; then
+    echo "ERROR: MariaDB wurde nicht ready." >&2
+    docker logs --tail 80 meowhome_db || true
+    exit 1
+  fi
+done
+
+echo "[restore] Import all-databases.sql.gz (inkl. mysql user/grants)..."
+gunzip -c "${TMP}/db/all-databases.sql.gz" | docker exec -i meowhome_db sh -lc "mariadb -uroot -p\"${DB_ROOT_PASSWORD}\""
+
+echo "[restore] Restliche Services starten..."
+compose up -d
+
+echo "[restore] Fertig."
+echo "[restore] Tipp: Falls etwas komisch ist: 'docker logs meowhome_db --tail 200' und 'docker logs meowhome_ftp --tail 200'"
+SH
+chmod +x "$PROJECT_DIR/tools/backup/restore.sh"
+
+# ----------------------------
+# Tools: Backup
+# ----------------------------
+cat > "$PROJECT_DIR/tools/backup/backup.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+
+PROJECT_DIR="${MEOWHOME_PROJECT_DIR:-$HOME/meowhome}"
+BACKUP_DIR="${PROJECT_DIR}/backups"
+TS="$(date +%Y%m%d-%H%M%S)"
+WORK="${BACKUP_DIR}/work-${TS}"
+OUT="${BACKUP_DIR}/meowhome-backup-${TS}.tar.gz"
+
+WITH_HTDOCS="${1:-}"  # use: --with-htdocs
+
+mkdir -p "${BACKUP_DIR}" "${WORK}"
+
+compose() {
+  if docker compose version >/dev/null 2>&1; then
+    docker compose "$@"
+  else
+    docker-compose "$@"
+  fi
+}
+
+need_container() {
+  local name="$1"
+  if ! docker inspect "$name" >/dev/null 2>&1; then
+    echo "ERROR: Container '$name' nicht gefunden." >&2
+    exit 1
+  fi
+}
+
+need_container "meowhome_db"
+
+echo "[backup] Ziel: ${OUT}"
+echo "[backup] Workdir: ${WORK}"
+
+# ----------------------------
+# 1) DB Dump: ALL databases incl. mysql system db (Users/Grants!)
+# ----------------------------
+echo "[backup] DB dump (all databases incl users/grants)..."
+mkdir -p "${WORK}/db"
+
+DUMP_CMD="mariadb-dump"
+if ! docker exec meowhome_db sh -lc "command -v mariadb-dump >/dev/null 2>&1"; then
+  DUMP_CMD="mysqldump"
+fi
+
+# DB_ROOT_PASSWORD aus .env (falls vorhanden), sonst leer
+DB_ROOT_PASSWORD=""
+if [[ -f "${PROJECT_DIR}/.env" ]]; then
+  DB_ROOT_PASSWORD="$(grep -E '^DB_ROOT_PASSWORD=' "${PROJECT_DIR}/.env" | head -n1 | cut -d= -f2- || true)"
+fi
+
+# shellcheck disable=SC2001
+DB_ROOT_PASSWORD="${DB_ROOT_PASSWORD%\"}"
+DB_ROOT_PASSWORD="${DB_ROOT_PASSWORD#\"}"
+
+# Dump -> gzip
+docker exec meowhome_db sh -lc \
+  "${DUMP_CMD} --all-databases --single-transaction --routines --events --triggers -uroot -p\"${DB_ROOT_PASSWORD}\"" \
+  | gzip -c > "${WORK}/db/all-databases.sql.gz"
+
+echo "[backup] DB dump ok: ${WORK}/db/all-databases.sql.gz"
+
+# ----------------------------
+# 2) Projektfiles packen (ohne htdocs per default)
+# ----------------------------
+echo "[backup] Projektfiles sammeln..."
+mkdir -p "${WORK}/project"
+
+copy_if_exists() {
+  local rel="$1"
+  if [[ -e "${PROJECT_DIR}/${rel}" ]]; then
+    mkdir -p "$(dirname "${WORK}/project/${rel}")"
+    cp -a "${PROJECT_DIR}/${rel}" "${WORK}/project/${rel}"
+  fi
+}
+
+# Wichtige Konfig + persistente Daten
+copy_if_exists "docker-compose.yml"
+copy_if_exists ".env"
+copy_if_exists "apache/vhosts"
+copy_if_exists "apache/snippets"
+copy_if_exists "letsencrypt"
+copy_if_exists "tools/ftp"     # enthält u.a. FTP SQLite DB / scripts
+copy_if_exists "certbot"
+copy_if_exists "dns-updater"
+copy_if_exists "php"
+copy_if_exists "web"
+
+# Optional: htdocs separat, weil groß
+if [[ "${WITH_HTDOCS}" == "--with-htdocs" ]]; then
+  echo "[backup] htdocs inkludieren..."
+  if [[ -d "${PROJECT_DIR}/htdocs" ]]; then
+    tar -C "${PROJECT_DIR}" -czf "${WORK}/htdocs.tar.gz" "htdocs"
+    echo "[backup] htdocs ok: ${WORK}/htdocs.tar.gz"
+  else
+    echo "[backup] htdocs nicht gefunden, skip."
+  fi
+else
+  echo "[backup] htdocs optional: nutze '--with-htdocs' wenn gewünscht."
+fi
+
+# project/ tar
+tar -C "${WORK}" -czf "${WORK}/project.tar.gz" "project"
+
+# manifest
+cat > "${WORK}/manifest.json" <<EOF
+{
+  "created_at": "$(date -Iseconds)",
+  "project_dir": "${PROJECT_DIR}",
+  "includes": {
+    "db_all_databases": true,
+    "project_tar": true,
+    "htdocs_tar": $( [[ "${WITH_HTDOCS}" == "--with-htdocs" ]] && echo true || echo false )
+  }
+}
+EOF
+
+# Finales Archiv
+tar -C "${WORK}" -czf "${OUT}" "db" "project.tar.gz" "manifest.json" $( [[ -f "${WORK}/htdocs.tar.gz" ]] && echo "htdocs.tar.gz" || true )
+
+# Cleanup workdir
+rm -rf "${WORK}"
+
+echo "[backup] Fertig: ${OUT}"
+
+SH
+chmod +x "$PROJECT_DIR/tools/backup/backup.sh"
 
 # ----------------------------
 # Tools: Permissions Hardening
@@ -323,6 +557,16 @@ FTP_CERT_DOMAIN=example.com
 # Dateirechte: Host UID/GID
 FTP_HOST_UID=1000
 FTP_HOST_GID=1000
+
+# ============================================================
+# MeowHome UI (optional)
+# - default: nur localhost (127.0.0.1)
+# - für LAN: MEOWHOME_UI_BIND=0.0.0.0 (Firewall beachten)
+# ============================================================
+MEOWHOME_UI_BIND=127.0.0.1
+MEOWHOME_UI_PORT=9090
+MEOWHOME_UI_USER=admin
+MEOWHOME_UI_PASS=admin
 ENV
 
 # ----------------------------
@@ -353,6 +597,11 @@ append_env_if_missing "CERTBOT_ENABLED" "true"
 append_env_if_missing "DNS_UPDATER_ENABLED" "true"
 append_env_if_missing "ACME_CHALLENGE" "dns"
 append_env_if_missing "DNS_PROVIDER" "cloudflare"
+append_env_if_missing "MEOWHOME_UI_BIND" "127.0.0.1"
+append_env_if_missing "MEOWHOME_UI_PORT" "9090"
+append_env_if_missing "MEOWHOME_UI_USER" "admin"
+append_env_if_missing "MEOWHOME_UI_PASS" "admin"
+
 
 # ----------------------------
 # Beispiel Webroot
@@ -768,7 +1017,7 @@ def cmd_list() -> None:
         status = "✓" if enabled else "✗"
         print(f"{u:<20} {status:<8} {target:<40}")
 
-def cmd_add(username: str, home_rel: str) -> None:
+def cmd_add(username: str, home_rel: str, password: str | None = None) -> None:
     username = username.strip()
     if not username:
         raise SystemExit("Username fehlt.")
@@ -777,7 +1026,13 @@ def cmd_add(username: str, home_rel: str) -> None:
     if home_rel == "":
         confirm("⚠️  home_rel ist leer -> User sieht ALLE Domain-Ordner unter htdocs. Fortfahren?")
 
-    pw = prompt_password()
+    # NEU: Wenn Passwort übergeben wurde -> non-interactive.
+    # Sonst bleibt es interaktiv (Shell-Workflow unverändert).
+    if password is None or str(password).strip() == "":
+        pw = prompt_password()
+    else:
+        pw = str(password)
+
     ph = hash_pw_sha512_crypt(pw)
 
     ensure_home_dir(home_rel)
@@ -812,17 +1067,23 @@ def cmd_enable(username: str, enabled: int) -> None:
         print(f"✓ User '{username}' {status}")
         print("⚠️  Führe 'meowftp.py apply' aus um Änderungen zu aktivieren!")
 
-def cmd_passwd(username: str) -> None:
+def cmd_passwd(username: str, password: str | None = None) -> None:
     con = db()
     row = con.execute("SELECT username FROM users WHERE username=?", (username,)).fetchone()
     if not row:
         raise SystemExit("❌ User nicht gefunden.")
-    pw = prompt_password()
+
+    if password is None or str(password).strip() == "":
+        pw = prompt_password()
+    else:
+        pw = str(password)
+
     ph = hash_pw_sha512_crypt(pw)
     con.execute("UPDATE users SET pass_hash=? WHERE username=?", (ph, username))
     con.commit()
     print(f"✓ User '{username}' password updated")
     print("⚠️  Führe 'meowftp.py apply' aus um Änderungen zu aktivieren!")
+
 
 def cmd_home(username: str, home_rel: str) -> None:
     home_rel = normalize_home_rel(home_rel)
@@ -838,12 +1099,32 @@ def cmd_home(username: str, home_rel: str) -> None:
         print(f"✓ User '{username}' home_rel='{home_rel or '(root)'}'")
         print("⚠️  Führe 'meowftp.py apply' aus um Änderungen zu aktivieren!")
 
+def docker_compose_cmd() -> list[str]:
+    """
+    Returns the compose command as argv list.
+    Prefers: docker compose
+    Fallback: docker-compose
+    """
+    try:
+        subprocess.check_call(
+            ["docker", "compose", "version"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL
+        )
+        return ["docker", "compose"]
+    except Exception:
+        return ["docker-compose"]
+
+
 def docker_compose_up_ftp() -> None:
     compose_file = os.path.join(BASE, "docker-compose.yml")
-    sh(["docker", "compose", "-f", compose_file, "up", "-d", "ftp"])
+    cmd = docker_compose_cmd()
+    sh(cmd + ["-f", compose_file, "up", "-d", "ftp"])
 
-def wait_for_container(max_wait: int = 30) -> None:
+
+def wait_for_container(max_wait: int = 90) -> None:
     print("⏳ Warte auf FTP Container...")
+    last_err = ""
     for i in range(max_wait):
         try:
             subprocess.run(
@@ -852,16 +1133,37 @@ def wait_for_container(max_wait: int = 30) -> None:
             )
             print("✓ Container ist bereit")
             return
-        except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
-            if i == max_wait - 1:
-                raise SystemExit("❌ Container startet nicht korrekt")
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError) as e:
+            last_err = str(e)
             time.sleep(1)
+
+    # Debug am Ende
+    try:
+        logs = subprocess.run(["docker", "logs", "--tail", "80", "meowhome_ftp"], capture_output=True, text=True, timeout=10)
+        print("----- meowhome_ftp logs (tail 80) -----")
+        print(logs.stdout)
+        print(logs.stderr)
+    except Exception:
+        pass
+
+    raise SystemExit(f"❌ Container startet nicht korrekt (nach {max_wait}s). Last error: {last_err}")
 
 def apply() -> None:
     if os.geteuid() != 0:
         print("⚠️  apply benötigt sudo/root")
-        print("Starte erneut mit sudo...")
-        os.execvp("sudo", ["sudo", sys.executable] + sys.argv)
+
+        # Nur wenn sudo verfügbar ist, versuchen wir re-exec (Shell-Workflow bleibt).
+        try:
+            sudo_path = sh_out(["which", "sudo"])
+        except Exception:
+            sudo_path = ""
+
+        if sudo_path:
+            print("Starte erneut mit sudo...")
+            os.execvp("sudo", ["sudo", sys.executable] + sys.argv)
+
+        # Kein sudo vorhanden (typisch im Container) -> sauber abbrechen
+        raise SystemExit("❌ sudo nicht verfügbar. Bitte 'apply' als root ausführen (z.B. via sudo in der Shell).")
 
     print("=" * 60)
     print("MeowFTP Apply - Aktiviere User-Änderungen")
@@ -869,7 +1171,14 @@ def apply() -> None:
     print()
 
     print("1️⃣  Starte FTP Container...")
-    docker_compose_up_ftp()
+    # Wenn Container schon läuft: nicht anfassen (vermeidet Restart-Race)
+    ps = subprocess.run(["docker", "ps", "--format", "{{.Names}}"], capture_output=True, text=True)
+    if "meowhome_ftp" not in ps.stdout.split():
+        print("   FTP Container läuft nicht -> starte...")
+        docker_compose_up_ftp()
+    else:
+        print("   FTP Container läuft bereits -> überspringe start")
+
     wait_for_container()
 
     con = db()
@@ -889,8 +1198,7 @@ def apply() -> None:
 
     print("3️⃣  Schreibe users.txt in Container...")
     subprocess.run(
-        ["docker", "exec", "-i", "meowhome_ftp", "sh", "-c",
-         "cat > /etc/vsftpd/users.txt"],
+        ["docker", "exec", "-i", "meowhome_ftp", "sh", "-c", "cat > /etc/vsftpd/users.txt"],
         input=users_txt_content.encode(),
         check=True
     )
@@ -936,10 +1244,11 @@ def apply() -> None:
     ], check=True)
 
     print("7️⃣  Restart FTP Service...")
-    subprocess.run([
-        "docker", "compose", "-f", os.path.join(BASE, "docker-compose.yml"),
-        "restart", "ftp"
-    ], check=True)
+    cmd = docker_compose_cmd()
+    subprocess.run(
+        cmd + ["-f", os.path.join(BASE, "docker-compose.yml"), "restart", "ftp"],
+        check=True
+    )
 
     time.sleep(2)
 
@@ -986,8 +1295,9 @@ def main() -> int:
             cmd_list()
         elif cmd == "add":
             if len(sys.argv) < 4:
-                raise SystemExit("add benötigt: <user> <htdocs_subfolder_or_empty>")
-            cmd_add(sys.argv[2], sys.argv[3])
+                raise SystemExit("add benötigt: <user> <htdocs_subfolder_or_empty> [password_optional]")
+            password = sys.argv[4] if len(sys.argv) >= 5 else None
+            cmd_add(sys.argv[2], sys.argv[3], password)
         elif cmd == "del":
             if len(sys.argv) < 3:
                 raise SystemExit("del benötigt: <user>")
@@ -1002,8 +1312,9 @@ def main() -> int:
             cmd_enable(sys.argv[2], 0)
         elif cmd == "passwd":
             if len(sys.argv) < 3:
-                raise SystemExit("passwd benötigt: <user>")
-            cmd_passwd(sys.argv[2])
+                raise SystemExit("passwd benötigt: <user> [password_optional]")
+            password = sys.argv[3] if len(sys.argv) >= 4 else None
+            cmd_passwd(sys.argv[2], password)
         elif cmd == "home":
             if len(sys.argv) < 4:
                 raise SystemExit("home benötigt: <user> <htdocs_subfolder_or_empty>")
@@ -1224,7 +1535,37 @@ services:
       - "21:21"
       - "${FTP_PASV_MIN}-${FTP_PASV_MAX}:${FTP_PASV_MIN}-${FTP_PASV_MAX}"
     restart: unless-stopped
+
+#__MEOWHOME_UI_SERVICE__
+
 YAML
+# ----------------------------
+# Optional: MeowHome Web UI (wenn ./meowhome-ui neben dem Installer liegt)
+# ----------------------------
+if [ -d "$SCRIPT_DIR/meowhome-ui" ]; then
+  echo "[ui] meowhome-ui/ gefunden -> kopiere UI und aktiviere Compose-Service"
+
+  mkdir -p "$PROJECT_DIR/meowhome-ui"
+  # copy (inkl. Unterordner)
+  cp -a "$SCRIPT_DIR/meowhome-ui/." "$PROJECT_DIR/meowhome-ui/"
+
+  # Stelle sicher, dass der Platzhalter existiert
+  if ! grep -q "#__MEOWHOME_UI_SERVICE__" "$PROJECT_DIR/docker-compose.yml"; then
+    echo "[ui] WARN: UI Platzhalter nicht gefunden, breche UI-Aktivierung ab"
+  else
+    # Ersetze Marker durch echten Service-Block
+    # Hinweis: sed -i funktioniert je nach Umgebung; in Debian/Ubuntu ok.
+    sed -i 's|^[[:space:]]*#__MEOWHOME_UI_SERVICE__.*$|  ui:\n    build:\n      context: ./meowhome-ui\n      dockerfile: Dockerfile\n    container_name: meowhome_ui\n    env_file: ./.env\n    environment:\n      MEOWHOME_PROJECT_DIR: /meowhome\n      MEOWHOME_UI_BIND: ${MEOWHOME_UI_BIND:-127.0.0.1}\n      MEOWHOME_UI_PORT: ${MEOWHOME_UI_PORT:-9090}\n      MEOWHOME_UI_USER: ${MEOWHOME_UI_USER:-admin}\n      MEOWHOME_UI_PASS: ${MEOWHOME_UI_PASS:-admin}\n    ports:\n      - \"${MEOWHOME_UI_BIND:-127.0.0.1}:${MEOWHOME_UI_PORT:-9090}:8000\"\n    volumes:\n      - ./:/meowhome:rw\n      - /var/run/docker.sock:/var/run/docker.sock\n    restart: unless-stopped|g' "$PROJECT_DIR/docker-compose.yml"
+
+    # Wenn du willst, automatisch starten:
+    echo "[ui] Starte UI Service..."
+    docker compose -f "$PROJECT_DIR/docker-compose.yml" up -d ui || true
+  fi
+else
+  # wenn kein UI vorhanden: Marker entfernen (sauberer Compose)
+  sed -i '/#__MEOWHOME_UI_SERVICE__/d' "$PROJECT_DIR/docker-compose.yml" 2>/dev/null || true
+fi
+
 
 # ----------------------------
 # web/Dockerfile (Apache)
@@ -1532,5 +1873,10 @@ docker compose ps
 docker compose logs -f
 ./tools/warmup.sh
 ./tools/permissions_hardening.sh --apply
+./tools/backup/backup.sh (without htdocs)
+./tools/backup/backup.sh --with-htdocs
+~/meowhome/tools/backup/restore.sh ~/meowhome/backups/meowhome-backup-YYYYmmdd-HHMMSS.tar.gz
+
+
 
 OUT
