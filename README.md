@@ -869,6 +869,13 @@ Restart after changes (vhost, ftp):
 docker compose restart php  
 docker compose restart web  
 docker compose restart ftp
+
+💾 Backup & Restore
+
+./tools/backup/backup.sh (without htdocs)
+./tools/backup/backup.sh --with-htdocs
+~/meowhome/tools/backup/restore.sh ~/meowhome/backups/meowhome-backup-YYYYmmdd-HHMMSS.tar.gz
+
 ```
 
 ---
