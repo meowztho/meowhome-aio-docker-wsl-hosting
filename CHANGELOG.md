@@ -1,5 +1,21 @@
 # Changelog
 
+## v2.3.0
+- NEW: Local Web UI (MeowHome UI) as a central control panel
+- NEW: Dashboard with container status and lifecycle controls
+- NEW: Health check page for Docker and all MeowHome services
+- NEW: Web-based FTP user management (powered by existing meowftp.py)
+- NEW: Web-based Apache VHost editor with config test and safe rollback
+- NEW: Full backup system (UI-triggered)
+  - Includes all MariaDB databases
+  - Includes MariaDB system database (users, privileges, grants)
+  - Includes Apache config, FTP user DB, certificates, .env
+  - Optional inclusion of htdocs/
+- NEW: Dedicated restore script (CLI-only for safety)
+- IMPROVED: FTP apply logic hardened against container restart race conditions
+- IMPROVED: UI auto-refresh handling after long-running actions
+
+
 ### Version 2.2.0
 - FIX: FTP write permissions caused by UID/GID mismatch (FTP guest user mapped to host UID/GID)
 - FIX: Avoid bind-mount ownership corruption (no recursive `chown -R` inside containers)
