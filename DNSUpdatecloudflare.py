@@ -60,7 +60,7 @@ def _norm_path(path_value: Optional[str], default_filename: str, default_dir: st
     Normalisiert einen Pfad:
     - expandiert %VAR% und ~
     - wenn kein Verzeichnisanteil vorhanden ist, nutze default_dir
-    - wenn nur ein Verzeichnis angegeben wurde, hänge default_filename an
+    - wenn nur ein Verzeichnis angegeben wurde, haenge default_filename an
     """
     if not path_value:
         return os.path.join(default_dir, default_filename)
@@ -69,11 +69,11 @@ def _norm_path(path_value: Optional[str], default_filename: str, default_dir: st
     f = os.path.basename(p)
     if not d:  # kein Ordner angegeben -> nutze default_dir
         return os.path.join(default_dir, f if f else default_filename)
-    if not f:  # nur Ordner angegeben -> füge default_filename an
+    if not f:  # nur Ordner angegeben -> fuege default_filename an
         return os.path.join(p, default_filename)
     return p
 
-# Basispfade aus .env (können leer sein), dann normalisieren
+# Basispfade aus .env (koennen leer sein), dann normalisieren
 STATE_DIR_ENV = os.getenv("STATE_DIR", "")
 STATE_DIR = _expand(STATE_DIR_ENV) if STATE_DIR_ENV else _default_state_dir()
 STATE_PATH = _norm_path(os.getenv("STATE_PATH"), "state.json", STATE_DIR)
@@ -96,10 +96,10 @@ try:
     logging.getLogger().addHandler(file_handler)
 except Exception as e:
     # Falls Log-Datei nicht schreibbar ist, weiter nur Konsole nutzen
-    logging.warning(f"Kann Log-Datei nicht öffnen ({LOG_PATH}): {e}")
+    logging.warning(f"Kann Log-Datei nicht oeffnen ({LOG_PATH}): {e}")
 
 # ======================================================
-# Helpers für .env-Parsing
+# Helpers fuer .env-Parsing
 # ======================================================
 def slug_domain(d: str) -> str:
     return re.sub(r"[^A-Za-z0-9]", "_", d.strip().lower())
@@ -117,7 +117,7 @@ def parse_bool(val: Optional[str], default: bool=False) -> bool:
 def load_domains_from_env() -> List[Dict[str, Any]]:
     """
     DOMAINS="zone1.com,zone2.de"
-    Für jede Zone:
+    Fuer jede Zone:
       - A_RECORDS_<slug>   = "zone1.com,sub1.zone1.com"
       - SPF_UPDATE_<slug>  = "true|false"
     """
@@ -197,7 +197,7 @@ def load_state() -> Dict[str, Any]:
         return {"last_known_ip": None, "last_force_date": None}
 
 def _safe_tmp(dirpath: str) -> str:
-    # Windows: Tempfile im Zielordner erstellen (wichtig für atomaren replace)
+    # Windows: Tempfile im Zielordner erstellen (wichtig fuer atomaren replace)
     return tempfile.NamedTemporaryFile("w", dir=dirpath, delete=False, encoding="utf-8").name
 
 def save_state(state: Dict[str, Any]) -> None:
@@ -238,7 +238,7 @@ def get_public_ip() -> Optional[str]:
         r.raise_for_status()
         return r.json()["ip"]
     except Exception as e:
-        logging.warning(f"Öffentliche IP konnte nicht geholt werden: {e}")
+        logging.warning(f"Oeffentliche IP konnte nicht geholt werden: {e}")
         return None
 
 def is_internet_available() -> bool:
@@ -256,7 +256,7 @@ def get_zone_id(domain: str) -> Optional[str]:
         if data.get("success") and data.get("result"):
             return data["result"][0]["id"]
     except Exception as e:
-        logging.error(f"Zone-ID für {domain} fehlgeschlagen: {e}")
+        logging.error(f"Zone-ID fuer {domain} fehlgeschlagen: {e}")
     return None
 
 def find_dns_record(zone_id: str, name: str, rtype: str = "A") -> Tuple[Optional[str], Optional[str]]:
@@ -288,10 +288,10 @@ def update_a_record(zone_id: str, record_id: str, fqdn: str, new_ip: str) -> boo
         if ok:
             logging.info(f"A-Record aktualisiert: {fqdn} → {new_ip} (proxied={proxied})")
         else:
-            logging.error(f"A-Record Update fehlgeschlagen für {fqdn}: {r.text}")
+            logging.error(f"A-Record Update fehlgeschlagen fuer {fqdn}: {r.text}")
         return ok
     except Exception as e:
-        logging.error(f"A-Record Update Exception für {fqdn}: {e}")
+        logging.error(f"A-Record Update Exception fuer {fqdn}: {e}")
         return False
 
 def get_spf_record(zone_id: str, name: str) -> Tuple[Optional[str], Optional[str]]:
@@ -312,11 +312,11 @@ def merge_spf(current: str, ip: str) -> str:
 def update_spf(zone_id: str, root_name: str, public_ip: str) -> None:
     rec_id, content = get_spf_record(zone_id, root_name)
     if not rec_id:
-        logging.info(f"Kein SPF-TXT für {root_name} gefunden – wird nicht automatisch angelegt.")
+        logging.info(f"Kein SPF-TXT fuer {root_name} gefunden – wird nicht automatisch angelegt.")
         return
     new_spf = merge_spf(content or "", public_ip)
     if new_spf == (content or ""):
-        logging.info(f"SPF bereits aktuell für {root_name}.")
+        logging.info(f"SPF bereits aktuell fuer {root_name}.")
         return
     payload = {"type": "TXT", "name": root_name, "content": new_spf, "ttl": 300}
     try:
@@ -326,11 +326,11 @@ def update_spf(zone_id: str, root_name: str, public_ip: str) -> None:
             timeout=20
         )
         if r.status_code < 300 and r.json().get("success", False):
-            logging.info(f"SPF aktualisiert für {root_name}: {new_spf}")
+            logging.info(f"SPF aktualisiert fuer {root_name}: {new_spf}")
         else:
-            logging.error(f"SPF Update fehlgeschlagen für {root_name}: {r.text}")
+            logging.error(f"SPF Update fehlgeschlagen fuer {root_name}: {r.text}")
     except Exception as e:
-        logging.error(f"SPF Update Exception für {root_name}: {e}")
+        logging.error(f"SPF Update Exception fuer {root_name}: {e}")
 
 # ======================================================
 # Zeitsteuerung
@@ -368,14 +368,14 @@ def main():
 
         public_ip = get_public_ip()
         if not public_ip:
-            logging.warning(f"Öffentliche IP unbekannt. Warte {RETRY_INTERVAL_SECONDS}s …")
+            logging.warning(f"Oeffentliche IP unbekannt. Warte {RETRY_INTERVAL_SECONDS}s …")
             time.sleep(RETRY_INTERVAL_SECONDS)
             continue
 
         force_now = should_force_update(last_force_date)
         ip_changed = (public_ip != last_known_ip)
 
-        logging.info(f"Aktuelle öffentliche IPv4: {public_ip} | geändert={ip_changed} | force={force_now}")
+        logging.info(f"Aktuelle oeffentliche IPv4: {public_ip} | geaendert={ip_changed} | force={force_now}")
 
         if ip_changed or force_now:
             for entry in DOMAINS:
@@ -386,7 +386,7 @@ def main():
                 logging.info(f"Verarbeite Zone: {zone_name}")
                 zone_id = get_zone_id(zone_name)
                 if not zone_id:
-                    logging.error(f"Zone-ID nicht gefunden für {zone_name}")
+                    logging.error(f"Zone-ID nicht gefunden fuer {zone_name}")
                     continue
 
                 # A-Records
@@ -396,7 +396,7 @@ def main():
                         logging.error(f"A-Record nicht gefunden: {fqdn}")
                         continue
                     if current_ip == public_ip and not force_now:
-                        logging.info(f"Keine Änderung: {fqdn} bleibt {public_ip}")
+                        logging.info(f"Keine Aenderung: {fqdn} bleibt {public_ip}")
                     else:
                         logging.info(f"Aktualisiere {fqdn}: {current_ip} → {public_ip}")
                         update_a_record(zone_id, rec_id, fqdn, public_ip)
@@ -413,10 +413,10 @@ def main():
                 last_force_date = state["last_force_date"]
             save_state(state)
 
-        # Sleep bis nächstes Ereignis
+        # Sleep bis naechstes Ereignis
         now = datetime.now()
         sleep_seconds = next_wakeup(now)
-        logging.info(f"Nächster Check in {int(sleep_seconds)}s (spätestens {FORCE_UPDATE_HOUR:02d}:00).")
+        logging.info(f"Naechster Check in {int(sleep_seconds)}s (spaetestens {FORCE_UPDATE_HOUR:02d}:00).")
         time.sleep(sleep_seconds)
 
 # ======================================================
