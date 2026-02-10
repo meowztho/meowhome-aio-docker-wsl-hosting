@@ -703,7 +703,6 @@ docker compose logs ftp
 docker compose build --no-cache
 docker compose up -d
 ```
-```
 
 ### 🔁 Automatic Execution After Startup (Optional)
 
@@ -796,7 +795,6 @@ Docker does not validate host mount readiness
 WSL mounts Windows paths asynchronously
 Result: containers may bind to paths that exist but are not yet fully initialized.
 
----
 ---
 
 ## 🎯 Best Practices
