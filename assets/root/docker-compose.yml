@@ -1,0 +1,97 @@
+services:
+  web:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+    container_name: meowhome_apache
+    env_file: ./.env
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./htdocs:/var/www:rw
+      - ./apache/vhosts:/etc/apache2/sites-enabled:rw
+      - ./apache/snippets:/etc/apache2/snippets:ro
+      - ./letsencrypt:/etc/letsencrypt:ro
+    depends_on:
+      - php
+    restart: unless-stopped
+
+  php:
+    build:
+      context: ./php
+      dockerfile: Dockerfile
+    container_name: meowhome_php
+    user: "${PUID}:${PGID}"
+    volumes:
+      - ./htdocs:/var/www:rw
+      - ./php/custom.ini:/usr/local/etc/php/conf.d/99-custom.ini:ro
+    restart: unless-stopped
+
+  mariadb:
+    image: mariadb:10.11
+    container_name: meowhome_db
+    env_file: ./.env
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${DB_NAME}
+      MYSQL_USER: ${DB_USER}
+      MYSQL_PASSWORD: ${DB_PASSWORD}
+    volumes:
+      - ./db:/var/lib/mysql
+    restart: unless-stopped
+
+  phpmyadmin:
+    image: phpmyadmin:5
+    container_name: meowhome_pma
+    env_file: ./.env
+    environment:
+      PMA_HOST: mariadb
+      PMA_USER: root
+      PMA_PASSWORD: ${DB_ROOT_PASSWORD}
+    ports:
+      - "127.0.0.1:8080:80"
+    depends_on:
+      - mariadb
+    restart: unless-stopped
+
+  certbot:
+    build:
+      context: ./certbot
+      dockerfile: Dockerfile
+    container_name: meowhome_certbot
+    env_file: ./.env
+    volumes:
+      - ./letsencrypt:/etc/letsencrypt
+      - ./state:/state
+      - ./htdocs:/var/www:rw
+      - /var/run/docker.sock:/var/run/docker.sock
+    restart: unless-stopped
+
+  dns_updater:
+    build:
+      context: ./dns-updater
+      dockerfile: Dockerfile
+    container_name: meowhome_dns_updater
+    env_file: ./.env
+    volumes:
+      - ./state:/state
+    restart: unless-stopped
+
+  ftp:
+    build:
+      context: ./ftp
+      dockerfile: Dockerfile
+    container_name: meowhome_ftp
+    env_file: ./.env
+    volumes:
+      - ./htdocs:/var/www:rw
+      - ./ftp/data:/etc/vsftpd:rw
+      - ./ftp/ssl:/etc/ssl/private:ro
+    ports:
+      - "21:21"
+      - "${FTP_PASV_MIN}-${FTP_PASV_MAX}:${FTP_PASV_MIN}-${FTP_PASV_MAX}"
+    restart: unless-stopped
+
+#__MEOWHOME_UI_SERVICE__
+
