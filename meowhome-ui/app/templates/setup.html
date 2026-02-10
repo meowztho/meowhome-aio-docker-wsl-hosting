@@ -1,0 +1,158 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Setup</h2>
+
+<p class="muted">
+  Diese Seite hilft bei der Grundkonfiguration, wenn MeowHome bereits gebaut wurde.
+  Datei: <code>{{ env_path }}</code>
+</p>
+
+{% if saved %}
+  <div class="card">
+    <strong>Gespeichert.</strong><br>
+    {% if backup_file %}
+      Backup der alten .env: <code>{{ backup_file }}</code><br>
+    {% endif %}
+    <span class="muted">{{ note }}</span>
+  </div>
+  <br>
+{% endif %}
+
+<div class="row">
+  <div class="card">
+    <h3>1) Grundkonfiguration (.env)</h3>
+
+    <form method="post" action="/setup/save">
+      <label>DOMAINS (comma-separated)</label><br>
+      <input name="DOMAINS" style="width:100%;" value="{{ env.DOMAINS }}"><br><br>
+
+      <label>LE_EMAIL</label><br>
+      <input name="LE_EMAIL" style="width:100%;" value="{{ env.LE_EMAIL }}"><br><br>
+
+      <label>ACME_CHALLENGE</label><br>
+      <select name="ACME_CHALLENGE">
+        <option value="dns" {% if env.ACME_CHALLENGE == "dns" %}selected{% endif %}>dns (default)</option>
+        <option value="http" {% if env.ACME_CHALLENGE == "http" %}selected{% endif %}>http (fallback)</option>
+      </select>
+      <p class="muted">
+        Hinweis: http benoetigt Port 80 extern erreichbar und unterstuetzt kein Wildcard (*.domain).
+      </p>
+
+      <label>
+        <input type="checkbox" name="CERTBOT_ENABLED" value="true" {% if env.CERTBOT_ENABLED == "true" %}checked{% endif %}>
+        CERTBOT_ENABLED
+      </label><br>
+
+      <label>
+        <input type="checkbox" name="DNS_UPDATER_ENABLED" value="true" {% if env.DNS_UPDATER_ENABLED == "true" %}checked{% endif %}>
+        DNS_UPDATER_ENABLED
+      </label><br><br>
+
+      <label>DNS_PROVIDER</label><br>
+      <input name="DNS_PROVIDER" style="width:100%;" value="{{ env.DNS_PROVIDER }}"><br><br>
+
+      <label>CLOUDFLARE_API_TOKEN (leave empty to keep)</label><br>
+      <input name="CLOUDFLARE_API_TOKEN" style="width:100%;" value=""><br>
+      <p class="muted">Wird nicht angezeigt. Leer lassen = unveraendert.</p>
+
+      <hr>
+
+      <label>FTP_PUBLIC_HOST</label><br>
+      <input name="FTP_PUBLIC_HOST" style="width:100%;" value="{{ env.FTP_PUBLIC_HOST }}"><br><br>
+
+      <label>
+        <input type="checkbox" name="FTP_TLS" value="true" {% if env.FTP_TLS == "YES" %}checked{% endif %}>
+        FTP_TLS (FTPS)
+      </label><br><br>
+
+      <hr>
+
+      <label>DB_ROOT_PASSWORD (leave empty to keep)</label><br>
+      <input type="password" name="DB_ROOT_PASSWORD" style="width:100%;" value=""><br><br>
+
+      <label>DB_PASSWORD (leave empty to keep)</label><br>
+      <input type="password" name="DB_PASSWORD" style="width:100%;" value=""><br><br>
+
+      <label>DB_USER</label><br>
+      <input name="DB_USER" style="width:100%;" value="{{ env.DB_USER }}"><br><br>
+
+      <label>DB_NAME</label><br>
+      <input name="DB_NAME" style="width:100%;" value="{{ env.DB_NAME }}"><br><br>
+
+      <label>
+        <input type="checkbox" name="PROXIED_DEFAULT" value="true" {% if env.PROXIED_DEFAULT == "true" %}checked{% endif %}>
+        PROXIED_DEFAULT
+      </label><br><br>
+
+      <hr>
+
+      <h4>MeowHome UI Login</h4>
+      <label>MEOWHOME_UI_USER</label><br>
+      <input name="MEOWHOME_UI_USER" style="width:100%;" value="{{ env.MEOWHOME_UI_USER }}"><br><br>
+
+      <label>MEOWHOME_UI_PASS (leave empty to keep)</label><br>
+      <input type="password" name="MEOWHOME_UI_PASS" style="width:100%;" value=""><br>
+      <p class="muted">Neue Login-Daten werden nach "docker compose up -d --force-recreate ui" aktiv.</p>
+      <button class="btn" type="submit" formaction="/setup/recreate-ui" formmethod="post">UI jetzt neu erstellen</button>
+      <p class="muted">Fuehrt aus: docker compose up -d --force-recreate ui</p>
+      <p class="muted">Hinweis: Dabei kann die UI kurzzeitig nicht erreichbar sein.</p>
+
+      <button class="btn" type="submit">Save .env</button>
+    </form>
+  </div>
+
+  <div class="card">
+    <h3>2) Zertifikate (Status)</h3>
+    {% if certs|length == 0 %}
+      <p class="muted">Kein DOMAINS gesetzt oder keine Daten verfuegbar.</p>
+    {% else %}
+      <table border="1" cellpadding="6" cellspacing="0">
+        <thead>
+          <tr>
+            <th>Domain</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for c in certs %}
+          <tr>
+            <td>{{ c.domain }}</td>
+            <td>
+              {% if c.exists %}
+                vorhanden
+              {% else %}
+                fehlt
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% endif %}
+
+    <p class="muted">
+      Fuer Details: <a href="/container/meowhome_certbot/logs?lines=200">certbot logs</a>
+    </p>
+
+    <hr>
+
+    <h3>3) Naechste Schritte</h3>
+    <ul>
+      <li><a href="/vhosts">VHosts</a>: VirtualHosts erstellen/pruefen</li>
+      <li><a href="/ftp">FTP</a>: FTP User anlegen / apply</li>
+      <li><a href="/backup">Backup</a>: erstes Backup erstellen</li>
+      <li><a href="/health">Health</a>: Container Status pruefen</li>
+    </ul>
+
+    <hr>
+
+    <h3>Ports (Hinweis)</h3>
+    <ul>
+      <li>80, 443 (HTTP/HTTPS)</li>
+      <li>21 (FTP)</li>
+      <li>21000-21010 (FTP Passive)</li>
+    </ul>
+  </div>
+</div>
+
+{% endblock %}

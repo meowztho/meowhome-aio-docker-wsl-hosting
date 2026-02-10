@@ -1,7 +1,9 @@
-import os
+﻿import os
 import time
 import pathlib
+import re
 import subprocess
+import html as html_lib
 from typing import Optional, Dict, Any, List, Tuple
 import secrets
 
@@ -20,9 +22,45 @@ PROJECT_DIR = os.getenv("MEOWHOME_PROJECT_DIR", "/meowhome")
 VHOST_DIR = os.path.join(PROJECT_DIR, "apache", "vhosts")
 BACKUPS_DIR = os.path.join(PROJECT_DIR, "backups")
 BACKUP_TOOL = os.path.join(PROJECT_DIR, "tools", "backup", "backup.sh")
+ENV_PATH = os.path.join(PROJECT_DIR, ".env")
 
 UI_USER = os.getenv("MEOWHOME_UI_USER", "admin")
 UI_PASS = os.getenv("MEOWHOME_UI_PASS", "admin")
+
+SETUP_KEYS = [
+    "DOMAINS",
+    "LE_EMAIL",
+    "CERTBOT_ENABLED",
+    "DNS_UPDATER_ENABLED",
+    "ACME_CHALLENGE",
+    "DNS_PROVIDER",
+    "CLOUDFLARE_API_TOKEN",
+    "FTP_PUBLIC_HOST",
+    "FTP_TLS",
+    "DB_ROOT_PASSWORD",
+    "DB_PASSWORD",
+    "DB_USER",
+    "DB_NAME",
+    "PROXIED_DEFAULT",
+    "MEOWHOME_UI_USER",
+    "MEOWHOME_UI_PASS",
+]
+
+SECRET_KEYS = {
+    "CLOUDFLARE_API_TOKEN",
+    "DB_ROOT_PASSWORD",
+    "DB_PASSWORD",
+    "MEOWHOME_UI_PASS",
+}
+
+BOOL_KEYS = {
+    "CERTBOT_ENABLED",
+    "DNS_UPDATER_ENABLED",
+    "FTP_TLS",
+    "PROXIED_DEFAULT",
+}
+
+ALLOWED_ACME = {"dns", "http"}
 
 security = HTTPBasic()
 templates = Jinja2Templates(directory=str(pathlib.Path(__file__).parent / "templates"))
@@ -61,6 +99,82 @@ def compose(cmd_args: List[str], timeout: int = 300) -> subprocess.CompletedProc
     return sh(["docker-compose"] + cmd_args, cwd=PROJECT_DIR, timeout=timeout)
 
 
+def render_text_page(title: str, text: str, back_url: str = "/", status_code: int = 200) -> HTMLResponse:
+    title_html = html_lib.escape(title)
+    text_html = html_lib.escape(text or "")
+    back_html = html_lib.escape(back_url, quote=True)
+
+    page = f"""<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{title_html}</title>
+  <style>
+    :root {{
+      color-scheme: dark;
+      --bg: #0d1117;
+      --surface: #161b22;
+      --border: #30363d;
+      --text: #e6edf3;
+      --muted: #94a3b8;
+      --link: #7cc7ff;
+      --link-hover: #b8e3ff;
+      --pre-bg: #0b1118;
+      --pre-border: #334155;
+      --pre-text: #dbe5ef;
+    }}
+    * {{
+      box-sizing: border-box;
+    }}
+    body {{
+      margin: 20px;
+      font-family: Arial, sans-serif;
+      line-height: 1.45;
+      background: var(--bg);
+      color: var(--text);
+    }}
+    .card {{
+      max-width: 960px;
+      border: 1px solid var(--border);
+      background: var(--surface);
+      border-radius: 8px;
+      padding: 14px;
+    }}
+    pre {{
+      margin: 0;
+      background: var(--pre-bg);
+      color: var(--pre-text);
+      border: 1px solid var(--pre-border);
+      border-radius: 8px;
+      padding: 12px;
+      overflow: auto;
+      white-space: pre-wrap;
+    }}
+    a {{
+      color: var(--link);
+      text-decoration: none;
+    }}
+    a:hover {{
+      color: var(--link-hover);
+      text-decoration: underline;
+    }}
+    .muted {{
+      color: var(--muted);
+    }}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h2>{title_html}</h2>
+    <pre>{text_html}</pre>
+    <p class="muted"><a href="{back_html}">Back</a></p>
+  </div>
+</body>
+</html>"""
+    return HTMLResponse(page, status_code=status_code)
+
+
 def html_autorefresh(
     url: str,
     seconds: int = 2,
@@ -69,23 +183,71 @@ def html_autorefresh(
 ) -> HTMLResponse:
     ts = int(time.time())
     target = f"{url}{'&' if '?' in url else '?'}ts={ts}"
+    title_html = html_lib.escape(title)
+    body_html = html_lib.escape(body)
+    target_html = html_lib.escape(target, quote=True)
+    target_js = target.replace("\\", "\\\\").replace("\"", "\\\"")
 
     html = f"""<!doctype html>
-<html>
+<html lang="de">
 <head>
   <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta http-equiv="cache-control" content="no-store" />
   <meta http-equiv="pragma" content="no-cache" />
   <meta http-equiv="expires" content="0" />
-  <title>{title}</title>
+  <title>{title_html}</title>
+  <style>
+    :root {{
+      color-scheme: dark;
+      --bg: #0d1117;
+      --surface: #161b22;
+      --border: #30363d;
+      --text: #e6edf3;
+      --muted: #94a3b8;
+      --link: #7cc7ff;
+      --link-hover: #b8e3ff;
+    }}
+    * {{
+      box-sizing: border-box;
+    }}
+    body {{
+      margin: 20px;
+      font-family: Arial, sans-serif;
+      line-height: 1.45;
+      background: var(--bg);
+      color: var(--text);
+    }}
+    .card {{
+      max-width: 760px;
+      border: 1px solid var(--border);
+      background: var(--surface);
+      border-radius: 8px;
+      padding: 14px;
+    }}
+    a {{
+      color: var(--link);
+      text-decoration: none;
+    }}
+    a:hover {{
+      color: var(--link-hover);
+      text-decoration: underline;
+    }}
+    .muted {{
+      color: var(--muted);
+    }}
+  </style>
 </head>
 <body>
-  <p>{body}</p>
-  <p>Weiterleitung in {seconds} Sekunden...</p>
-  <p><a href="{target}">Wenn nichts passiert: hier klicken</a></p>
+  <div class="card">
+    <h2>{title_html}</h2>
+    <p>{body_html}</p>
+    <p class="muted">Weiterleitung in {seconds} Sekunden...</p>
+    <p><a href="{target_html}">Wenn nichts passiert: hier klicken</a></p>
+  </div>
   <script>
     setTimeout(function() {{
-      window.location.replace("{target}");
+      window.location.replace("{target_js}");
     }}, {seconds} * 1000);
   </script>
 </body>
@@ -205,7 +367,7 @@ def ensure_backup_tool() -> None:
     if not os.path.exists(BACKUP_TOOL):
         raise HTTPException(status_code=500, detail=f"Backup-Tool fehlt: {BACKUP_TOOL}")
     if not os.access(BACKUP_TOOL, os.X_OK):
-        raise HTTPException(status_code=500, detail=f"Backup-Tool ist nicht ausführbar: chmod +x {BACKUP_TOOL}")
+        raise HTTPException(status_code=500, detail=f"Backup-Tool ist nicht ausfuehrbar: chmod +x {BACKUP_TOOL}")
 
 
 def parse_backup_output_for_path(text: str) -> Optional[str]:
@@ -223,10 +385,128 @@ def sanitize_backup_name(name: str) -> str:
     # nur Dateiname, keine Pfade
     name = name.strip()
     if "/" in name or "\\" in name:
-        raise HTTPException(status_code=400, detail="Ungültiger Dateiname")
+        raise HTTPException(status_code=400, detail="Ungueltiger Dateiname")
     if not name.startswith("meowhome-backup-") or not name.endswith(".tar.gz"):
-        raise HTTPException(status_code=400, detail="Ungültiger Backup-Name")
+        raise HTTPException(status_code=400, detail="Ungueltiger Backup-Name")
     return name
+
+
+def env_read_raw() -> List[str]:
+    if not os.path.exists(ENV_PATH):
+        return []
+    return pathlib.Path(ENV_PATH).read_text(encoding="utf-8", errors="replace").splitlines(True)
+
+
+def env_parse(lines: List[str]) -> Dict[str, str]:
+    data: Dict[str, str] = {}
+    for line in lines:
+        s = line.strip()
+        if not s or s.startswith("#") or "=" not in s:
+            continue
+        k, v = s.split("=", 1)
+        data[k.strip()] = v.strip()
+    return data
+
+
+def env_set_values(lines: List[str], updates: Dict[str, str]) -> List[str]:
+    # Erhaelt Kommentare/Reihenfolge bestmoeglich, ersetzt nur KEY= Zeilen oder haengt an.
+    existing_keys = set()
+    out: List[str] = []
+
+    for line in lines:
+        if "=" in line and not line.lstrip().startswith("#"):
+            k = line.split("=", 1)[0].strip()
+            if k in updates:
+                out.append(f"{k}={updates[k]}\n")
+                existing_keys.add(k)
+                continue
+        out.append(line)
+
+    # fehlende Keys anhaengen
+    missing = [k for k in updates.keys() if k not in existing_keys]
+    if missing:
+        if out and not out[-1].endswith("\n"):
+            out[-1] = out[-1] + "\n"
+        out.append("\n# Added by MeowHome UI Setup\n")
+        for k in missing:
+            out.append(f"{k}={updates[k]}\n")
+
+    return out
+
+
+def env_backup_file() -> Optional[str]:
+    if not os.path.exists(ENV_PATH):
+        return None
+    ts = time.strftime("%Y%m%d-%H%M%S")
+    bak = ENV_PATH + f".bak.{ts}"
+    pathlib.Path(bak).write_bytes(pathlib.Path(ENV_PATH).read_bytes())
+    return bak
+
+
+def normalize_bool(val: str) -> str:
+    v = (val or "").strip().lower()
+    if v in ("1", "true", "yes", "on"):
+        return "true"
+    return "false"
+
+
+def validate_domains(domains: str) -> str:
+    # Komma-separiert, Leerwerte entfernen, basic sanity (keine spaces/slashes).
+    raw = [d.strip() for d in (domains or "").split(",")]
+    items = [d for d in raw if d]
+    if not items:
+        raise HTTPException(status_code=400, detail="DOMAINS darf nicht leer sein")
+    for d in items:
+        if re.search(r"[\s/]", d):
+            raise HTTPException(status_code=400, detail=f"Ungueltige Domain in DOMAINS: {d}")
+    return ",".join(items)
+
+
+def validate_email(email: str) -> str:
+    e = (email or "").strip()
+    if not e or "@" not in e:
+        raise HTTPException(status_code=400, detail="LE_EMAIL ungueltig")
+    return e
+
+
+def resolve_vhost_file(file_name: str) -> pathlib.Path:
+    file_name = (file_name or "").strip()
+    if not file_name.endswith(".conf"):
+        raise HTTPException(status_code=400, detail="Nur .conf erlaubt")
+    if "/" in file_name or "\\" in file_name:
+        raise HTTPException(status_code=403, detail="Ungueltiger Dateipfad")
+
+    vhost_base = pathlib.Path(VHOST_DIR).resolve()
+    full_path = (vhost_base / file_name).resolve()
+    try:
+        full_path.relative_to(vhost_base)
+    except ValueError:
+        raise HTTPException(status_code=403, detail="Zugriff verweigert")
+    return full_path
+
+
+def cert_status_for_domains(domains_csv: str) -> List[Dict[str, Any]]:
+    # Checkt letsencrypt/live/<domain>/{fullchain.pem,privkey.pem}
+    res: List[Dict[str, Any]] = []
+    lets = pathlib.Path(PROJECT_DIR) / "letsencrypt" / "live"
+    domains = [d.strip() for d in (domains_csv or "").split(",") if d.strip()]
+    for d in domains:
+        live = lets / d
+        fullchain = live / "fullchain.pem"
+        privkey = live / "privkey.pem"
+        res.append({
+            "domain": d,
+            "exists": fullchain.exists() and privkey.exists(),
+            "fullchain": str(fullchain),
+            "privkey": str(privkey),
+        })
+    return res
+
+
+def mask_value(key: str, value: str) -> str:
+    if key in SECRET_KEYS and value:
+        return "********"
+    return value
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -297,7 +577,7 @@ def compose_action(
     else:
         raise HTTPException(status_code=400, detail="Unknown compose action")
 
-    return HTMLResponse(f"<pre>{res.stdout}\n{res.stderr}</pre><p><a href='/'>Back</a></p>")
+    return render_text_page("Compose output", f"{res.stdout}\n{res.stderr}")
 
 
 # ----------------------------
@@ -398,6 +678,142 @@ def backup_download(file: str, user: str = Depends(require_auth)):
 
 
 # ----------------------------
+# Setup UI (.env + Zertifikate)
+# ----------------------------
+
+@app.get("/setup", response_class=HTMLResponse)
+def setup_page(request: Request, user: str = Depends(require_auth)):
+    lines = env_read_raw()
+    env = env_parse(lines)
+
+    # Defaults anzeigen (ohne bestehende Werte zu ueberschreiben)
+    view: Dict[str, str] = {}
+    for k in SETUP_KEYS:
+        view[k] = env.get(k, "")
+
+    # Secrets maskieren
+    for k in list(view.keys()):
+        view[k] = mask_value(k, view[k])
+
+    domains_csv = env.get("DOMAINS", "")
+    certs = cert_status_for_domains(domains_csv) if domains_csv else []
+
+    return templates.TemplateResponse("setup.html", {
+        "request": request,
+        "user": user,
+        "env": view,
+        "certs": certs,
+        "env_path": ENV_PATH,
+    })
+
+
+@app.post("/setup/save", response_class=HTMLResponse)
+def setup_save(
+    request: Request,
+    user: str = Depends(require_auth),
+
+    # Basics
+    DOMAINS: str = Form(""),
+    LE_EMAIL: str = Form(""),
+
+    CERTBOT_ENABLED: Optional[str] = Form(None),
+    DNS_UPDATER_ENABLED: Optional[str] = Form(None),
+    ACME_CHALLENGE: str = Form("dns"),
+    DNS_PROVIDER: str = Form("cloudflare"),
+
+    CLOUDFLARE_API_TOKEN: str = Form(""),
+    FTP_PUBLIC_HOST: str = Form(""),
+    FTP_TLS: Optional[str] = Form(None),
+
+    DB_ROOT_PASSWORD: str = Form(""),
+    DB_PASSWORD: str = Form(""),
+    DB_USER: str = Form(""),
+    DB_NAME: str = Form(""),
+
+    PROXIED_DEFAULT: Optional[str] = Form(None),
+    MEOWHOME_UI_USER: str = Form(""),
+    MEOWHOME_UI_PASS: str = Form(""),
+):
+    lines = env_read_raw()
+    updates: Dict[str, str] = {}
+
+    # Validation / normalization
+    updates["DOMAINS"] = validate_domains(DOMAINS)
+    updates["LE_EMAIL"] = validate_email(LE_EMAIL)
+
+    acme = (ACME_CHALLENGE or "").strip().lower()
+    if acme not in ALLOWED_ACME:
+        raise HTTPException(status_code=400, detail="ACME_CHALLENGE muss dns oder http sein")
+    updates["ACME_CHALLENGE"] = acme
+
+    updates["DNS_PROVIDER"] = (DNS_PROVIDER or "cloudflare").strip().lower() or "cloudflare"
+
+    updates["CERTBOT_ENABLED"] = normalize_bool(CERTBOT_ENABLED or "")
+    updates["DNS_UPDATER_ENABLED"] = normalize_bool(DNS_UPDATER_ENABLED or "")
+    updates["FTP_TLS"] = "YES" if (FTP_TLS or "").strip().lower() in ("1", "true", "yes", "on") else "NO"
+    updates["PROXIED_DEFAULT"] = normalize_bool(PROXIED_DEFAULT or "")
+
+    # Non-secret normal fields
+    updates["FTP_PUBLIC_HOST"] = (FTP_PUBLIC_HOST or "").strip()
+
+    # Secrets: nur setzen, wenn Feld nicht leer ist
+    if CLOUDFLARE_API_TOKEN.strip():
+        updates["CLOUDFLARE_API_TOKEN"] = CLOUDFLARE_API_TOKEN.strip()
+
+    if DB_ROOT_PASSWORD.strip():
+        updates["DB_ROOT_PASSWORD"] = DB_ROOT_PASSWORD.strip()
+    if DB_PASSWORD.strip():
+        updates["DB_PASSWORD"] = DB_PASSWORD.strip()
+
+    if DB_USER.strip():
+        updates["DB_USER"] = DB_USER.strip()
+    if DB_NAME.strip():
+        updates["DB_NAME"] = DB_NAME.strip()
+    if MEOWHOME_UI_USER.strip():
+        updates["MEOWHOME_UI_USER"] = MEOWHOME_UI_USER.strip()
+    if MEOWHOME_UI_PASS.strip():
+        updates["MEOWHOME_UI_PASS"] = MEOWHOME_UI_PASS.strip()
+
+    # Backup + write
+    bak = env_backup_file()
+    new_lines = env_set_values(lines, updates)
+    pathlib.Path(ENV_PATH).write_text("".join(new_lines), encoding="utf-8")
+
+    # Page neu rendern (maskiert)
+    env_after = env_parse(new_lines)
+    view: Dict[str, str] = {}
+    for k in SETUP_KEYS:
+        view[k] = mask_value(k, env_after.get(k, ""))
+
+    certs = cert_status_for_domains(env_after.get("DOMAINS", ""))
+
+    return templates.TemplateResponse("setup.html", {
+        "request": request,
+        "user": user,
+        "env": view,
+        "certs": certs,
+        "env_path": ENV_PATH,
+        "saved": True,
+        "backup_file": bak or "",
+        "note": "Gespeichert. Aenderungen werden beim naechsten docker compose recreate wirksam (auch fuer UI Login-Daten).",
+    })
+
+
+@app.post("/setup/recreate-ui")
+def setup_recreate_ui(user: str = Depends(require_auth)):
+    res = compose(["up", "-d", "--force-recreate", "ui"], timeout=900)
+    text = (res.stdout + "\n" + res.stderr).strip()
+    if res.returncode != 0:
+        return render_text_page(
+            "UI recreate failed",
+            text or "docker compose up -d --force-recreate ui fehlgeschlagen.",
+            back_url="/setup",
+            status_code=500,
+        )
+    return render_text_page("UI recreate output", text or "UI wurde neu erstellt.", back_url="/setup")
+
+
+# ----------------------------
 # FTP User Management (nutzt tools/ftp/meowftp.py)
 # ----------------------------
 
@@ -427,6 +843,7 @@ def ftp_add(
     username: str = Form(...),
     password: str = Form(...),
     home_rel: str = Form(""),
+    allow_all: Optional[str] = Form(None),
     user: str = Depends(require_auth)
 ):
     username = username.strip()
@@ -449,21 +866,29 @@ def ftp_add(
             raise HTTPException(status_code=400, detail="home_rel: absolute Pfade (/) nicht erlaubt, nur relative")
         if any(c.isspace() for c in home_rel):
             raise HTTPException(status_code=400, detail="home_rel: keine Leerzeichen erlaubt")
+    else:
+        allow_all_enabled = (allow_all or "").strip().lower() in ("1", "true", "yes", "on")
+        if not allow_all_enabled:
+            raise HTTPException(
+                status_code=400,
+                detail="Leeres home_rel bedeutet Zugriff auf alles unter htdocs. Bitte Checkbox 'Vollzugriff' aktivieren.",
+            )
 
-    res_add = sh(["python", meowftp_py(), "add", username, home_rel, password], cwd=PROJECT_DIR, timeout=60)
-    res_home = sh(["python", meowftp_py(), "home", username, home_rel], cwd=PROJECT_DIR, timeout=60)
+    add_cmd = ["python", meowftp_py(), "add", username, home_rel, password]
+    if not home_rel:
+        add_cmd.append("--allow-all")
+    res_add = sh(add_cmd, cwd=PROJECT_DIR, timeout=60)
     res_apply = sh(["python", meowftp_py(), "apply"], cwd=PROJECT_DIR, timeout=600)
 
     text = "\n".join([
         "=== add ===", res_add.stdout, res_add.stderr,
-        "=== home ===", res_home.stdout, res_home.stderr,
         "=== apply ===", res_apply.stdout, res_apply.stderr,
     ]).strip()
 
-    if res_add.returncode != 0 or res_home.returncode != 0 or res_apply.returncode != 0:
-        return HTMLResponse(f"<pre>{text}</pre><p><a href='/ftp'>Back</a></p>", status_code=400)
+    if res_add.returncode != 0 or res_apply.returncode != 0:
+        return render_text_page("FTP command failed", text, back_url="/ftp", status_code=400)
 
-    return html_autorefresh("/ftp", seconds=2, title="FTP User hinzugefügt", body="User wurde gespeichert und apply wurde ausgeführt.")
+    return html_autorefresh("/ftp", seconds=2, title="FTP User hinzugefuegt", body="User wurde gespeichert und apply wurde ausgefuehrt.")
 
 
 @app.post("/ftp/del")
@@ -489,9 +914,9 @@ def ftp_del(
     ]).strip()
 
     if res_del.returncode != 0 or res_apply.returncode != 0:
-        return HTMLResponse(f"<pre>{text}</pre><p><a href='/ftp'>Back</a></p>", status_code=400)
+        return render_text_page("FTP command failed", text, back_url="/ftp", status_code=400)
 
-    return html_autorefresh("/ftp", seconds=2, title="FTP User gelöscht", body="User wurde gelöscht und apply wurde ausgeführt.")
+    return html_autorefresh("/ftp", seconds=2, title="FTP User geloescht", body="User wurde geloescht und apply wurde ausgefuehrt.")
 
 
 @app.post("/ftp/enable")
@@ -521,9 +946,9 @@ def ftp_enable(
     ]).strip()
 
     if res.returncode != 0 or res_apply.returncode != 0:
-        return HTMLResponse(f"<pre>{text}</pre><p><a href='/ftp'>Back</a></p>", status_code=400)
+        return render_text_page("FTP command failed", text, back_url="/ftp", status_code=400)
 
-    return html_autorefresh("/ftp", seconds=2, title="FTP User aktualisiert", body="Status wurde geändert und apply wurde ausgeführt.")
+    return html_autorefresh("/ftp", seconds=2, title="FTP User aktualisiert", body="Status wurde geaendert und apply wurde ausgefuehrt.")
 
 
 # ----------------------------
@@ -548,18 +973,8 @@ def vhosts(request: Request, user: str = Depends(require_auth)):
 @app.get("/vhosts/edit", response_class=HTMLResponse)
 def vhosts_edit(request: Request, file: str, user: str = Depends(require_auth)):
     file = file.strip()
-    if not file.endswith(".conf"):
-        raise HTTPException(status_code=400, detail="Nur .conf erlaubt")
-    
-    # Path traversal prevention: resolve() ensures path is within VHOST_DIR
-    try:
-        vhost_base = pathlib.Path(VHOST_DIR).resolve()
-        full_path = (vhost_base / file).resolve()
-        if not str(full_path).startswith(str(vhost_base)):
-            raise HTTPException(status_code=403, detail="Zugriff verweigert")
-    except Exception as e:
-        raise HTTPException(status_code=403, detail="Ungültiger Dateipfad")
-    
+    full_path = resolve_vhost_file(file)
+
     content = ""
     if full_path.exists():
         content = full_path.read_text(encoding="utf-8", errors="replace")
@@ -578,18 +993,8 @@ def vhosts_save(
     user: str = Depends(require_auth)
 ):
     file = file.strip()
-    if not file.endswith(".conf"):
-        raise HTTPException(status_code=400, detail="Nur .conf erlaubt")
+    full_path = resolve_vhost_file(file)
 
-    # Path traversal prevention
-    try:
-        vhost_base = pathlib.Path(VHOST_DIR).resolve()
-        full_path = (vhost_base / file).resolve()
-        if not str(full_path).startswith(str(vhost_base)):
-            raise HTTPException(status_code=403, detail="Zugriff verweigert")
-    except Exception as e:
-        raise HTTPException(status_code=403, detail="Ungültiger Dateipfad")
-    
     full = str(full_path)
     bak = backup_file(full)
     safe_write_file(full, content)
@@ -598,12 +1003,13 @@ def vhosts_save(
     if not result.get("ok"):
         if bak and os.path.exists(bak):
             pathlib.Path(full).write_bytes(pathlib.Path(bak).read_bytes())
-        return HTMLResponse(
-            "<h3>Fehler: Apache Config Test fehlgeschlagen, Änderung zurückgerollt</h3>"
-            f"<pre>{result.get('stdout','')}\n{result.get('stderr','')}</pre>"
-            "<p><a href='/vhosts'>Back</a></p>",
-            status_code=400
-        )
+        details = "\n".join([
+            "Apache config test failed. Changes were rolled back.",
+            "",
+            result.get("stdout", ""),
+            result.get("stderr", ""),
+        ]).strip()
+        return render_text_page("VHost save failed", details, back_url="/vhosts", status_code=400)
 
     return RedirectResponse(url="/vhosts", status_code=303)
 
@@ -616,11 +1022,11 @@ def vhosts_save(
 def certbot_renew(user: str = Depends(require_auth)):
     res = sh(["docker", "exec", "meowhome_certbot", "sh", "-lc", "certbot renew --non-interactive || true"], timeout=180)
     text = (res.stdout + "\n" + res.stderr).strip()
-    return HTMLResponse(f"<pre>{text}</pre><p><a href='/'>Back</a></p>")
+    return render_text_page("Certbot renew output", text)
 
 
 @app.post("/dns/run")
 def dns_run(user: str = Depends(require_auth)):
     res = sh(["docker", "restart", "meowhome_dns_updater"], timeout=60)
     text = (res.stdout + "\n" + res.stderr).strip()
-    return HTMLResponse(f"<pre>{text}</pre><p><a href='/'>Back</a></p>")
+    return render_text_page("DNS updater output", text)

@@ -1,16 +1,12 @@
-{% extends "base.html" %}
+﻿{% extends "base.html" %}
 {% block content %}
-  <title>Backup - MeowHome UI</title>
-  <meta http-equiv="cache-control" content="no-store" />
-</head>
-<body>
   <h2>Backup</h2>
 
   <h3>Backup erstellen</h3>
   <form action="/backup/create" method="post">
     <label>
       <input type="checkbox" name="with_htdocs" value="true">
-      htdocs mit sichern (kann sehr groß sein)
+      htdocs mit sichern (kann sehr gross sein)
     </label>
     <br><br>
     <button type="submit">Create Backup</button>
@@ -37,7 +33,7 @@
       <thead>
         <tr>
           <th>Datei</th>
-          <th>Größe</th>
+          <th>Groesse</th>
           <th>Datum</th>
           <th>Download</th>
         </tr>
@@ -57,7 +53,6 @@
   {% endif %}
 
   <h3>Restore</h3>
-  <p>Restore läuft bewusst nicht über die UI. Nutze:</p>
+  <p>Restore laeuft bewusst nicht ueber die UI. Nutze:</p>
   <pre>~/meowhome/tools/backup/restore.sh ~/meowhome/backups/&lt;backup-file&gt;</pre>
-</body>
 {% endblock %}

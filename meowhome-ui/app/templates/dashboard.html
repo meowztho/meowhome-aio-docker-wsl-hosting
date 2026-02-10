@@ -1,7 +1,133 @@
-{% extends "base.html" %}
+﻿{% extends "base.html" %}
 {% block content %}
+
+<style>
+  /* Setup-Hilfe: gut sichtbar direkt unter Navigation */
+  .setup-help-card {
+    margin: 12px 0 24px 0;
+    border: 2px solid #631414;
+    background: rgba(139, 30, 30, 0.18);
+  }
+
+  .setup-help {
+    margin: 0;
+  }
+
+  .setup-help summary {
+    list-style: none;
+    cursor: pointer;
+    display: block;
+    width: 100%;
+    text-align: center;
+    padding: 12px 14px;
+    border-radius: 10px;
+    background: #c62828;
+    color: #ffffff;
+    font-weight: 700;
+    user-select: none;
+  }
+
+  .setup-help summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .setup-help summary:hover {
+    background: #6b0e0e;
+  }
+
+  .setup-help[open] summary {
+    background: #7f1010;
+  }
+
+.setup-help pre {
+  margin-top: 12px;
+  background: var(--pre-bg);
+  color: var(--pre-text);
+  border: 1px solid #8b1e1e;
+  padding: 14px;
+  border-radius: 10px;
+  overflow: auto;
+  max-height: 420px;
+
+  font-family: monospace;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+</style>
+
 <h2>MeowHome Dashboard</h2>
 <p class="muted">Project: {{ project_dir }}</p>
+
+<!-- ===================== -->
+<!-- Setup-Hilfe – ausklappbar, OBEN direkt unter Navigation -->
+<!-- ===================== -->
+<div class="card setup-help-card">
+  <details class="setup-help">
+    <summary>
+      Setup-Hilfe anzeigen / ausblenden
+    </summary>
+
+    <pre>
+WebUI Setup 127.0.0.1:9090 (admin/admin) bitte sofort nach Start aendern!
+env kann auch nach build angepasst werden.
+
+1) KONFIGURATION
+   nano $PROJECT_DIR/.env
+
+   Wichtig:
+   - DOMAINS
+   - LE_EMAIL
+   - CERTBOT_ENABLED / DNS_UPDATER_ENABLED (optional)
+   - ACME_CHALLENGE (dns=default / http=fallback)
+   - CLOUDFLARE_API_TOKEN (nur noetig wenn ACME_CHALLENGE=dns oder DNS_UPDATER_ENABLED=true)
+   - FTP_PUBLIC_HOST (oeffentliche IP/Domain!)
+   - DB Passwoerter aendern
+
+2) PORTS PRUEFEN
+   - 80, 443 (HTTP/HTTPS)
+   - 21 (FTP)
+   - 21000-21010 (FTP Passive)
+
+   Hinweis:
+   - ACME_CHALLENGE=http benoetigt Port 80 extern erreichbar
+   - HTTP-01 unterstuetzt KEIN Wildcard (*.domain)
+
+3) SYSTEM STARTEN
+   cd $PROJECT_DIR
+   docker compose up -d --build
+
+4) FTP BENUTZER ERSTELLEN
+   cd $PROJECT_DIR
+   ./tools/ftp/meowftp.py add webmaster example.com
+   ./tools/ftp/meowftp.py add admin ""
+   ./tools/ftp/meowftp.py apply
+
+5) ZERTIFIKATE
+   docker logs -f meowhome_certbot
+
+   Ohne Cloudflare:
+   - DNS_UPDATER_ENABLED=false
+   - ACME_CHALLENGE=http
+   - (Wildcard geht dann nicht)
+
+   Fuer FTPS (nach erfolgreicher Cert-Erstellung):
+   ./ftp/build-ftps-pem.sh example.com
+   Dann in .env: FTP_TLS=YES setzen
+   docker compose restart ftp
+
+NUETZLICHE BEFEHLE:
+==================
+docker compose ps
+docker compose logs -f
+./tools/warmup.sh
+./tools/permissions_hardening.sh --apply
+./tools/backup/backup.sh (without htdocs)
+./tools/backup/backup.sh --with-htdocs
+~/meowhome/tools/backup/restore.sh ~/meowhome/backups/meowhome-backup-YYYYmmdd-HHMMSS.tar.gz
+    </pre>
+  </details>
+</div>
 
 <div class="card">
   <h3>Compose</h3>
@@ -15,9 +141,11 @@
 
 <div class="card">
   <h3>Certbot / DNS</h3>
+
   <form method="post" action="/certbot/renew" style="display:inline;">
     <button class="btn">Certbot renew now</button>
   </form>
+
   <form method="post" action="/dns/run" style="display:inline;">
     <button class="btn">DNS updater run now</button>
   </form>
@@ -40,4 +168,5 @@
   </div>
   {% endfor %}
 </div>
+
 {% endblock %}

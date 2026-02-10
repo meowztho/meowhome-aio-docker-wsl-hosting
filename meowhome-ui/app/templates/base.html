@@ -1,29 +1,237 @@
 <!doctype html>
-<html>
+<html lang="de">
 <head>
   <meta charset="utf-8">
   <title>{{ title if title else "MeowHome UI" }}</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>
-    body { font-family: Arial, sans-serif; margin: 20px; }
-    .row { display: flex; gap: 12px; flex-wrap: wrap; }
-    .card { border: 1px solid #ddd; border-radius: 8px; padding: 12px; min-width: 280px; }
-    .muted { color: #666; }
-    pre { background: #111; color: #eee; padding: 12px; overflow: auto; border-radius: 8px; }
-    input, textarea, select, button { padding: 8px; }
-    textarea { width: 100%; height: 520px; font-family: monospace; }
-    a { text-decoration: none; }
-    .nav a { margin-right: 10px; }
-    .btn { cursor: pointer; }
+    :root {
+      color-scheme: dark;
+      --bg: #0d1117;
+      --surface: #161b22;
+      --surface-soft: #1f2630;
+      --border: #30363d;
+      --text: #e6edf3;
+      --muted: #94a3b8;
+      --link: #7cc7ff;
+      --link-hover: #b8e3ff;
+      --control-bg: #0f141b;
+      --control-border: #425062;
+      --control-hover: #334155;
+      --pre-bg: #0b1118;
+      --pre-border: #334155;
+      --pre-text: #dbe5ef;
+      --nav-bg: #111822;
+      --focus: #79c0ff;
+    }
+
+    :root[data-theme="light"] {
+      color-scheme: light;
+      --bg: #f5f7fb;
+      --surface: #ffffff;
+      --surface-soft: #eef2f7;
+      --border: #d4dbe6;
+      --text: #19212a;
+      --muted: #5f6b7a;
+      --link: #005ab8;
+      --link-hover: #003f80;
+      --control-bg: #ffffff;
+      --control-border: #b5c1d0;
+      --control-hover: #e5ecf5;
+      --pre-bg: #0f1720;
+      --pre-border: #1e293b;
+      --pre-text: #e2e8f0;
+      --nav-bg: #eaf0f8;
+      --focus: #1d4ed8;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: Arial, sans-serif;
+      margin: 20px;
+      line-height: 1.45;
+      background: var(--bg);
+      color: var(--text);
+    }
+
+    .row {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    .card {
+      border: 1px solid var(--border);
+      background: var(--surface);
+      border-radius: 8px;
+      padding: 12px;
+      min-width: 280px;
+    }
+
+    .muted {
+      color: var(--muted);
+    }
+
+    pre {
+      background: var(--pre-bg);
+      color: var(--pre-text);
+      border: 1px solid var(--pre-border);
+      padding: 12px;
+      overflow: auto;
+      border-radius: 8px;
+    }
+
+    code {
+      background: var(--surface-soft);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 0 4px;
+    }
+
+    input, textarea, select, button {
+      padding: 8px;
+      border-radius: 6px;
+      border: 1px solid var(--control-border);
+      background: var(--control-bg);
+      color: var(--text);
+    }
+
+    input[type="checkbox"] {
+      width: auto;
+      height: auto;
+      padding: 0;
+      accent-color: #4ea1ff;
+    }
+
+    textarea {
+      width: 100%;
+      height: 520px;
+      font-family: monospace;
+    }
+
+    button, .btn {
+      cursor: pointer;
+      background: var(--surface-soft);
+    }
+
+    button:hover, .btn:hover {
+      background: var(--control-hover);
+    }
+
+    a {
+      text-decoration: none;
+      color: var(--link);
+    }
+
+    a:hover {
+      color: var(--link-hover);
+      text-decoration: underline;
+    }
+
+    .nav {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 10px;
+      padding: 10px 12px;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: var(--nav-bg);
+    }
+
+    .nav a {
+      margin-right: 0;
+      font-weight: 600;
+    }
+
+    .nav-spacer {
+      flex: 1 1 auto;
+    }
+
+    .theme-toggle {
+      font-size: 13px;
+      padding: 6px 10px;
+    }
+
+    hr {
+      border: 0;
+      border-top: 1px solid var(--border);
+      margin: 16px 0;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+
+    th, td {
+      border: 1px solid var(--border);
+      padding: 6px;
+      text-align: left;
+      vertical-align: top;
+    }
+
+    th {
+      background: var(--surface-soft);
+    }
+
+    :focus-visible {
+      outline: 2px solid var(--focus);
+      outline-offset: 2px;
+    }
   </style>
+  <script>
+    (function () {
+      var key = "meowhome-theme";
+      var root = document.documentElement;
+      var stored = null;
+      try {
+        stored = localStorage.getItem(key);
+      } catch (e) {
+        stored = null;
+      }
+      var theme = stored === "light" || stored === "dark" ? stored : "dark";
+      root.setAttribute("data-theme", theme);
+
+      function setToggleLabel(button) {
+        if (!button) return;
+        var active = root.getAttribute("data-theme") || "dark";
+        button.textContent = active === "dark" ? "Light mode" : "Dark mode";
+      }
+
+      document.addEventListener("DOMContentLoaded", function () {
+        var toggle = document.getElementById("theme-toggle");
+        setToggleLabel(toggle);
+        if (!toggle) return;
+
+        toggle.addEventListener("click", function () {
+          var current = root.getAttribute("data-theme") || "dark";
+          var next = current === "dark" ? "light" : "dark";
+          root.setAttribute("data-theme", next);
+          try {
+            localStorage.setItem(key, next);
+          } catch (e) {
+            // ignore storage errors and keep runtime theme
+          }
+          setToggleLabel(toggle);
+        });
+      });
+    })();
+  </script>
 </head>
 <body>
   <div class="nav">
     <a href="/">Dashboard</a>
+    <a href="/setup">Setup</a>
     <a href="/ftp">FTP</a>
     <a href="/vhosts">VHosts</a>
     <a href="/health">Health</a>
     <a href="/backup">Backup</a>
+    <span class="nav-spacer"></span>
+    <button id="theme-toggle" class="btn theme-toggle" type="button">Light mode</button>
   </div>
   <hr>
   {% block content %}{% endblock %}

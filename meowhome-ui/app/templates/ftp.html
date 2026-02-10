@@ -1,4 +1,4 @@
-{% extends "base.html" %}
+﻿{% extends "base.html" %}
 {% block content %}
 <h2>FTP Users</h2>
 
@@ -16,13 +16,19 @@
     </div>
     <div>
       <label>Password</label><br>
-      <input name="password" required>
+      <input type="password" name="password" required>
     </div>
     <div>
       <label>Home (relative under htdocs, optional)</label><br>
-      <input name="home_rel" placeholder="e.g. shop.it-phi.de">
+      <input name="home_rel" placeholder="e.g. shop.example.com">
     </div>
-    <p class="muted">Nach Add wird automatisch apply ausgeführt.</p>
+    <div style="margin-top:8px;">
+      <label>
+        <input type="checkbox" name="allow_all" value="true">
+        Vollzugriff auf alles unter htdocs erlauben (nur wenn Home leer bleibt)
+      </label>
+    </div>
+    <p class="muted">Nach Add wird automatisch apply ausgefuehrt.</p>
     <button class="btn" type="submit">Add + Apply</button>
   </form>
 </div>
