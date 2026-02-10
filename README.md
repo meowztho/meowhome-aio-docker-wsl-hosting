@@ -267,6 +267,7 @@ The guided setup flow allows you to:
 - **Enable or disable Certbot and DNS updater**
 - **Configure domains, email, FTP, and database credentials**
 - **Apply changes safely without manual file editing**
+
 This approach is ideal if you:
 - **Prefer a graphical setup**
 - **Are running MeowHome for the first time**
