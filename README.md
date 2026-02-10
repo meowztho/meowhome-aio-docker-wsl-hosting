@@ -752,12 +752,12 @@ restart containers safely in the correct order
 Safe to run multiple times (no duplicate entries).
 
 ### 🔍 What this command does (short & precise)
-
+```bash
 crontab -l → lists existing cron jobs
 grep -v 'meowhome-warmup' → removes an old warmup entry if present
 echo "@reboot …" → adds the warmup job
 | crontab - → installs the updated crontab
-
+```
 ### ➖ Remove the cron job again
 
 If you no longer need the warmup restart, remove it with:
