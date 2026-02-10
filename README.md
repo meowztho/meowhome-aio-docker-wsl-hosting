@@ -174,6 +174,10 @@ chmod +x init-meowhome.sh
 ```
 
 ### 2. Configuration
+### You can configure MeowHome either manually via .env or via the Web UI.
+
+### Option A: Manual .env configuration (CLI)
+
 
 ```bash
 cd ~/meowhome
@@ -238,7 +242,35 @@ docker logs -f meowhome_certbot
 
 # If certificates were created successfully:
 ls -la letsencrypt/live/
+
 ```
+### Option B: Web UI
+
+After the initial setup, you can build and start the system immediately and complete the configuration using the Web UI.
+
+```bash
+cd ~/meowhome
+docker compose up -d --build
+```
+Then open the Web UI in your browser:
+```bash
+http://127.0.0.1:9090
+```
+Default login:
+```bash
+Username: admin
+Password: admin
+```
+
+The guided setup flow allows you to:
+- **Configure the full .env file via the browser**
+- **Enable or disable Certbot and DNS updater**
+- **Configure domains, email, FTP, and database credentials**
+- **Apply changes safely without manual file editing**
+This approach is ideal if you:
+- **Prefer a graphical setup**
+- **Are running MeowHome for the first time**
+- **Want to avoid editing .env manually**
 
 ---
 
