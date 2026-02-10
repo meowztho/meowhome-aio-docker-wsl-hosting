@@ -1,10 +1,28 @@
 # Changelog
 
 ## v2.3.1
-- FIX: FTP `home_rel` Validation angepasst, um legitime relative Pfade korrekt zu akzeptieren
-- FIX: Vermeidung von False-Positives bei `home_rel` (z. B. durch naive `..` Erkennung)
-- IMPROVED: Robustere Input-Validierung ohne Beeinträchtigung der bestehenden UI-Funktionalität
-- SECURITY: Validation bleibt strikt gegen Path Traversal und absolute Pfade
+### Fixed
+- FTP `home_rel` validation adjusted to correctly accept legitimate relative paths
+- Prevention of false positives in `home_rel` validation (e.g. naive `..` detection)
+- Edge cases where valid FTP paths were rejected by overly strict checks
+
+### Improved
+- `meowftp` refactored and aligned with Web UI logic
+- Shared validation and behavior between CLI and UI
+- More robust input validation without impacting existing UI functionality
+
+### Added
+- Dark mode for MeowHome Web UI
+- Guided setup flow in the Web UI
+  - Full `.env` configuration via browser
+  - Reduced need for manual file editing
+  - Suitable for first-time installations
+
+### Security
+- FTP path validation remains strict against:
+  - Path traversal
+  - Absolute paths
+  - Escaping the intended FTP root
 
 
 ## v2.3.0
