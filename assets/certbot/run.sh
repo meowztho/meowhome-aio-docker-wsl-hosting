@@ -19,6 +19,43 @@ fi
 PROP="${CF_PROPAGATION_SECONDS:-30}"
 CH="${ACME_CHALLENGE:-dns}"
 PROVIDER="${DNS_PROVIDER:-cloudflare}"
+ACCOUNT_DIR="/etc/letsencrypt/accounts/acme-v02.api.letsencrypt.org/directory"
+CERTBOT_ACCOUNT="${LE_ACCOUNT:-}"
+
+resolve_certbot_account() {
+  if [ -n "${CERTBOT_ACCOUNT}" ]; then
+    echo "[certbot] using LE_ACCOUNT=${CERTBOT_ACCOUNT}"
+    return 0
+  fi
+
+  if [ ! -d "${ACCOUNT_DIR}" ]; then
+    return 0
+  fi
+
+  count="$(find "${ACCOUNT_DIR}" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l | tr -d '[:space:]')"
+
+  if [ "${count}" = "1" ]; then
+    CERTBOT_ACCOUNT="$(find "${ACCOUNT_DIR}" -mindepth 1 -maxdepth 1 -type d -exec basename {} \; | head -n 1)"
+    echo "[certbot] auto-selected account: ${CERTBOT_ACCOUNT}"
+    return 0
+  fi
+
+  if [ "${count}" -gt 1 ] 2>/dev/null; then
+    echo "[certbot] multiple Let's Encrypt accounts found; set LE_ACCOUNT in .env."
+    echo "[certbot] available account IDs:"
+    find "${ACCOUNT_DIR}" -mindepth 1 -maxdepth 1 -type d -exec basename {} \; | sed 's/^/[certbot]   - /'
+    echo "[certbot] example: LE_ACCOUNT=70e6"
+    return 1
+  fi
+}
+
+run_certbot() {
+  if [ -n "${CERTBOT_ACCOUNT}" ]; then
+    certbot "$@" --account "${CERTBOT_ACCOUNT}"
+  else
+    certbot "$@"
+  fi
+}
 
 reload_apache() {
   echo "[certbot] apache reload/restart"
@@ -27,6 +64,10 @@ reload_apache() {
   fi
   docker restart meowhome_apache >/dev/null 2>&1 || true
 }
+
+if ! resolve_certbot_account; then
+  exit 1
+fi
 
 issue_dns_cloudflare() {
   if [ -z "${CLOUDFLARE_API_TOKEN:-}" ]; then
@@ -41,7 +82,7 @@ issue_dns_cloudflare() {
   issue_wildcard_for_zone() {
     zone="$1"
     echo "[certbot] issuing wildcard for zone: $zone"
-    certbot certonly \
+    run_certbot certonly \
       --non-interactive --agree-tos \
       --email "${LE_EMAIL}" \
       --dns-cloudflare --dns-cloudflare-credentials "${CF_INI}" \
@@ -62,7 +103,7 @@ issue_dns_cloudflare() {
     done
 
     # shellcheck disable=SC2086
-    certbot certonly \
+    run_certbot certonly \
       --non-interactive --agree-tos \
       --email "${LE_EMAIL}" \
       --dns-cloudflare --dns-cloudflare-credentials "${CF_INI}" \
@@ -87,7 +128,7 @@ issue_http01_webroot() {
     WEBROOT="/var/www/${zone}"
     mkdir -p "$WEBROOT/.well-known/acme-challenge"
     echo "[certbot] issuing cert for: $zone (webroot=$WEBROOT)"
-    certbot certonly \
+    run_certbot certonly \
       --non-interactive --agree-tos \
       --email "${LE_EMAIL}" \
       --webroot -w "$WEBROOT" \
@@ -109,7 +150,7 @@ reload_apache
 
 while true; do
   echo "[certbot] renew start"
-  certbot renew --non-interactive --quiet || true
+  run_certbot renew --non-interactive --quiet || true
   reload_apache
   echo "[certbot] renew done, sleeping 12h"
   sleep 12h
