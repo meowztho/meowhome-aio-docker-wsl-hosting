@@ -40,6 +40,25 @@ resolve_certbot_account() {
     return 0
   fi
 
+  # If multiple accounts exist, try to infer from existing renewal files.
+  renewal_accounts="$(
+    grep -hE '^account *= *' /etc/letsencrypt/renewal/*.conf 2>/dev/null \
+      | sed -E 's/^account *= *//' \
+      | tr -d '[:space:]' \
+      | sed '/^$/d' \
+      | sort -u
+  )"
+  renewal_count="$(printf '%s\n' "${renewal_accounts}" | sed '/^$/d' | wc -l | tr -d '[:space:]')"
+
+  if [ "${renewal_count}" = "1" ]; then
+    candidate="$(printf '%s\n' "${renewal_accounts}" | head -n 1)"
+    if [ -n "${candidate}" ] && [ -d "${ACCOUNT_DIR}/${candidate}" ]; then
+      CERTBOT_ACCOUNT="${candidate}"
+      echo "[certbot] auto-selected account from renewal config: ${CERTBOT_ACCOUNT}"
+      return 0
+    fi
+  fi
+
   if [ "${count}" -gt 1 ] 2>/dev/null; then
     echo "[certbot] multiple Let's Encrypt accounts found; set LE_ACCOUNT in .env."
     echo "[certbot] available account IDs:"
