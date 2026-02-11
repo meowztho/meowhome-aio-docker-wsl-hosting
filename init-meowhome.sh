@@ -282,8 +282,10 @@ Nach dem ersten Start direkt in /setup die .env und Login-Daten anpassen.
 
    Wichtig:
    - DOMAINS
-   - LE_ACCOUNT (optional, nur bei mehreren Let's Encrypt Accounts)
    - LE_EMAIL
+   - LE_ACCOUNT (optional; bei Erstinstallation leer lassen.
+     Nur setzen wenn certbot "Please choose an account" meldet.
+     Die Account-IDs stehen dann im Log: docker logs -f meowhome_certbot)
    - CERTBOT_ENABLED / DNS_UPDATER_ENABLED (optional)
    - ACME_CHALLENGE (dns=default / http=fallback)
    - CLOUDFLARE_API_TOKEN (nur noetig wenn ACME_CHALLENGE=dns oder DNS_UPDATER_ENABLED=true)
