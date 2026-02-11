@@ -1,5 +1,10 @@
 # Changelog
 
+## v2.3.2
+### Fixed
+- Certbot non-interactive account selection now works reliably when multiple Let's Encrypt accounts exist
+- Prevented startup failure with `Please choose an account` by supporting explicit account selection
+
 ## v2.3.1
 ### Fixed
 - FTP `home_rel` validation adjusted to correctly accept legitimate relative paths
