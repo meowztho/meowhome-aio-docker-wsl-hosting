@@ -1,5 +1,16 @@
 # Changelog
 
+## v2.3.3
+### Added
+- VHost delete action in the Web UI (`/vhosts`) with per-file delete button and confirmation prompt
+
+### Fixed
+- Certbot startup loop when multiple Let's Encrypt accounts exist but `LE_ACCOUNT` is not set
+- Certbot now auto-selects the account from existing renewal configs when this is unambiguous
+
+### Improved
+- Installer output now clearly explains when `LE_ACCOUNT` is required and where to find account IDs
+
 ## v2.3.2
 ### Fixed
 - Certbot non-interactive account selection now works reliably when multiple Let's Encrypt accounts exist
