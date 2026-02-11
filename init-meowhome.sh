@@ -110,6 +110,7 @@ append_env_if_missing "CERTBOT_ENABLED" "true"
 append_env_if_missing "DNS_UPDATER_ENABLED" "true"
 append_env_if_missing "ACME_CHALLENGE" "dns"
 append_env_if_missing "DNS_PROVIDER" "cloudflare"
+append_env_if_missing "LE_ACCOUNT" ""
 append_env_if_missing "MEOWHOME_UI_BIND" "127.0.0.1"
 append_env_if_missing "MEOWHOME_UI_PORT" "9090"
 append_env_if_missing "MEOWHOME_UI_USER" "admin"
@@ -281,6 +282,7 @@ Nach dem ersten Start direkt in /setup die .env und Login-Daten anpassen.
 
    Wichtig:
    - DOMAINS
+   - LE_ACCOUNT (optional, nur bei mehreren Let's Encrypt Accounts)
    - LE_EMAIL
    - CERTBOT_ENABLED / DNS_UPDATER_ENABLED (optional)
    - ACME_CHALLENGE (dns=default / http=fallback)
