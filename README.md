@@ -193,6 +193,10 @@ DOMAINS=example.com,example.net
 # Let's Encrypt email
 LE_EMAIL=admin@example.com
 
+# Optional: only needed when certbot reports
+# "Please choose an account" in non-interactive mode
+LE_ACCOUNT=
+
 # Cloudflare API token
 CLOUDFLARE_API_TOKEN=your_cloudflare_token_here
 
@@ -369,6 +373,7 @@ RETRY_INTERVAL_SECONDS=300
 # Let's Encrypt
 # ============================================================
 LE_EMAIL=admin@example.com
+LE_ACCOUNT=
 CF_PROPAGATION_SECONDS=30
 
 # Wildcard Mode (recommended)
@@ -582,6 +587,7 @@ Port:      21
 - `ACME_CHALLENGE=dns`
 - supports wildcard certificates (`*.domain`)
 - requires `CLOUDFLARE_API_TOKEN` (current implementation: Cloudflare)
+- if multiple Let's Encrypt accounts exist, set `LE_ACCOUNT=<id>`
 
 **HTTP-01 (Fallback, no DNS API required):**
 - `ACME_CHALLENGE=http`
@@ -594,7 +600,7 @@ Recommended settings for HTTP-01:
 ACME_CHALLENGE=http
 DNS_UPDATER_ENABLED=false
 WILDCARD=false
-
+```
 
 #### Manual Certbot Restart
 
@@ -678,6 +684,21 @@ docker logs -f meowhome_certbot
 # 4. After successful cert creation, enable VHost again
 mv apache/vhosts/10-example.conf.disabled apache/vhosts/10-example.conf
 docker compose restart web
+```
+### Certbot: "Please choose an account" (non-interactive)
+
+If certbot logs contain:
+- `Missing command line flag or config entry for this setting`
+- `Please choose an account`
+
+set `LE_ACCOUNT` in `.env` to one of the shown IDs and restart certbot.
+
+```bash
+# Example (use one of your real IDs from the certbot log)
+LE_ACCOUNT=70e6
+
+docker compose restart certbot
+docker logs -f meowhome_certbot
 ```
 
 ### Permission denied on FTP upload
