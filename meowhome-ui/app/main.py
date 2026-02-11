@@ -1014,6 +1014,50 @@ def vhosts_save(
     return RedirectResponse(url="/vhosts", status_code=303)
 
 
+@app.post("/vhosts/delete")
+def vhosts_delete(
+    file: str = Form(...),
+    user: str = Depends(require_auth)
+):
+    file = file.strip()
+    full_path = resolve_vhost_file(file)
+
+    if not full_path.exists():
+        return render_text_page(
+            "VHost delete failed",
+            f"Datei nicht gefunden: {file}",
+            back_url="/vhosts",
+            status_code=404
+        )
+
+    full = str(full_path)
+    bak = backup_file(full)
+
+    try:
+        full_path.unlink()
+    except OSError as e:
+        return render_text_page(
+            "VHost delete failed",
+            f"Datei konnte nicht geloescht werden: {e}",
+            back_url="/vhosts",
+            status_code=400
+        )
+
+    result = apache_test_and_reload()
+    if not result.get("ok"):
+        if bak and os.path.exists(bak):
+            pathlib.Path(full).write_bytes(pathlib.Path(bak).read_bytes())
+        details = "\n".join([
+            "Apache config test failed. Deletion was rolled back.",
+            "",
+            result.get("stdout", ""),
+            result.get("stderr", ""),
+        ]).strip()
+        return render_text_page("VHost delete failed", details, back_url="/vhosts", status_code=400)
+
+    return RedirectResponse(url="/vhosts", status_code=303)
+
+
 # ----------------------------
 # Certbot / DNS Updater
 # ----------------------------

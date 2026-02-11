@@ -7,7 +7,13 @@
   {% if files and files|length > 0 %}
     <ul>
       {% for f in files %}
-      <li><a href="/vhosts/edit?file={{ f }}">{{ f }}</a></li>
+      <li>
+        <a href="/vhosts/edit?file={{ f }}">{{ f }}</a>
+        <form method="post" action="/vhosts/delete" style="display:inline; margin-left:8px;" onsubmit="return confirm('VHost-Datei wirklich loeschen?');">
+          <input type="hidden" name="file" value="{{ f }}">
+          <button class="btn" type="submit">Delete</button>
+        </form>
+      </li>
       {% endfor %}
     </ul>
   {% else %}
