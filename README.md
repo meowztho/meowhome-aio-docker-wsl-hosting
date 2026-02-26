@@ -1144,10 +1144,7 @@ MIT License – see the [LICENSE](LICENSE) file
 
 ## 📧 Support
 
-- **Issues**: [GitHub Issues](https://github.com/yourusername/meowhome/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/yourusername/meowhome/discussions)
-- **Email**: admin@example.com
-
+- **Issues**: [GitHub Issues](https://github.com/meowztho/meowhome-aio-docker-wsl-hosting/issues)
 ---
 
 <div align="center">
