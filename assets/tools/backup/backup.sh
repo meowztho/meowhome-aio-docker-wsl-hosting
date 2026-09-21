@@ -1,125 +1,122 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-PROJECT_DIR="${MEOWHOME_PROJECT_DIR:-$HOME/meowhome}"
+# Backups contain database contents, .env secrets and private keys.
+umask 077
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+INSTALLED_PROJECT_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd -P)"
+if [[ -n "${MEOWHOME_PROJECT_DIR:-}" ]]; then
+  PROJECT_DIR="${MEOWHOME_PROJECT_DIR}"
+elif [[ -f "${INSTALLED_PROJECT_DIR}/docker-compose.yml" ]]; then
+  PROJECT_DIR="${INSTALLED_PROJECT_DIR}"
+else
+  PROJECT_DIR="$HOME/meowhome"
+fi
 BACKUP_DIR="${PROJECT_DIR}/backups"
 TS="$(date +%Y%m%d-%H%M%S)"
-WORK="${BACKUP_DIR}/work-${TS}"
+mkdir -p "${BACKUP_DIR}"
+WORK="$(mktemp -d "${BACKUP_DIR}/.work-${TS}-XXXXXX")"
 OUT="${BACKUP_DIR}/meowhome-backup-${TS}.tar.gz"
+WITH_HTDOCS="${1:-}"
 
-WITH_HTDOCS="${1:-}"  # use: --with-htdocs
+if [[ -n "${WITH_HTDOCS}" && "${WITH_HTDOCS}" != "--with-htdocs" ]]; then
+  echo "Usage: $0 [--with-htdocs]" >&2
+  exit 2
+fi
 
-mkdir -p "${BACKUP_DIR}" "${WORK}"
+cleanup() { rm -rf "${WORK}"; }
+trap cleanup EXIT
 
 compose() {
   if docker compose version >/dev/null 2>&1; then
     docker compose "$@"
-  else
+  elif command -v docker-compose >/dev/null 2>&1; then
     docker-compose "$@"
+  else
+    echo "ERROR: Docker Compose nicht gefunden." >&2
+    return 127
   fi
 }
 
-need_container() {
-  local name="$1"
-  if ! docker inspect "$name" >/dev/null 2>&1; then
-    echo "ERROR: Container '$name' nicht gefunden." >&2
-    exit 1
+read_env_value() {
+  local key="$1" value=""
+  [[ -f "${PROJECT_DIR}/.env" ]] || return 0
+  value="$(grep -E "^${key}=" "${PROJECT_DIR}/.env" | tail -n1 | cut -d= -f2- || true)"
+  if [[ ${#value} -ge 2 ]]; then
+    if [[ "${value:0:1}" == '"' && "${value: -1}" == '"' ]] || [[ "${value:0:1}" == "'" && "${value: -1}" == "'" ]]; then
+      value="${value:1:${#value}-2}"
+    fi
   fi
+  printf '%s' "$value"
 }
 
-need_container "meowhome_db"
+if ! docker inspect meowhome_db >/dev/null 2>&1; then
+  echo "ERROR: Container 'meowhome_db' nicht gefunden." >&2
+  exit 1
+fi
 
-echo "[backup] Ziel: ${OUT}"
-echo "[backup] Workdir: ${WORK}"
-
-# ----------------------------
-# 1) DB Dump: ALL databases incl. mysql system db (Users/Grants!)
-# ----------------------------
-echo "[backup] DB dump (all databases incl users/grants)..."
 mkdir -p "${WORK}/db"
+echo "[backup] Ziel: ${OUT}"
+echo "[backup] DB dump (all databases incl users/grants)..."
 
 DUMP_CMD="mariadb-dump"
 if ! docker exec meowhome_db sh -lc "command -v mariadb-dump >/dev/null 2>&1"; then
   DUMP_CMD="mysqldump"
 fi
-
-# DB_ROOT_PASSWORD aus .env (falls vorhanden), sonst leer
-DB_ROOT_PASSWORD=""
-if [[ -f "${PROJECT_DIR}/.env" ]]; then
-  DB_ROOT_PASSWORD="$(grep -E '^DB_ROOT_PASSWORD=' "${PROJECT_DIR}/.env" | head -n1 | cut -d= -f2- || true)"
-fi
-
-# shellcheck disable=SC2001
-DB_ROOT_PASSWORD="${DB_ROOT_PASSWORD%\"}"
-DB_ROOT_PASSWORD="${DB_ROOT_PASSWORD#\"}"
-
-# Dump -> gzip
-docker exec meowhome_db sh -lc \
-  "${DUMP_CMD} --all-databases --single-transaction --routines --events --triggers -uroot -p\"${DB_ROOT_PASSWORD}\"" \
+DB_ROOT_PASSWORD="$(read_env_value DB_ROOT_PASSWORD)"
+docker exec -e "MYSQL_PWD=${DB_ROOT_PASSWORD}" meowhome_db \
+  "$DUMP_CMD" --all-databases --single-transaction --routines --events --triggers -uroot \
   | gzip -c > "${WORK}/db/all-databases.sql.gz"
+gzip -t "${WORK}/db/all-databases.sql.gz"
 
-echo "[backup] DB dump ok: ${WORK}/db/all-databases.sql.gz"
-
-# ----------------------------
-# 2) Projektfiles packen (ohne htdocs per default)
-# ----------------------------
+# Build one portable project archive. Runtime/generated trees are excluded.
 echo "[backup] Projektfiles sammeln..."
-mkdir -p "${WORK}/project"
+tar -C "${PROJECT_DIR}" -czf "${WORK}/project.tar.gz" \
+  --exclude='./.git' \
+  --exclude='./backups' \
+  --exclude='./db' \
+  --exclude='./htdocs' \
+  --exclude='./ftp/data' \
+  --exclude='./ftp/ssl/vsftpd.pem' \
+  .
 
-copy_if_exists() {
-  local rel="$1"
-  if [[ -e "${PROJECT_DIR}/${rel}" ]]; then
-    mkdir -p "$(dirname "${WORK}/project/${rel}")"
-    cp -a "${PROJECT_DIR}/${rel}" "${WORK}/project/${rel}"
-  fi
-}
-
-# Wichtige Konfig + persistente Daten
-copy_if_exists "docker-compose.yml"
-copy_if_exists ".env"
-copy_if_exists "apache/vhosts"
-copy_if_exists "apache/snippets"
-copy_if_exists "letsencrypt"
-copy_if_exists "tools/ftp"     # enthaelt u.a. FTP SQLite DB / scripts
-copy_if_exists "certbot"
-copy_if_exists "dns-updater"
-copy_if_exists "php"
-copy_if_exists "web"
-
-# Optional: htdocs separat, weil groß
 if [[ "${WITH_HTDOCS}" == "--with-htdocs" ]]; then
   echo "[backup] htdocs inkludieren..."
   if [[ -d "${PROJECT_DIR}/htdocs" ]]; then
     tar -C "${PROJECT_DIR}" -czf "${WORK}/htdocs.tar.gz" "htdocs"
-    echo "[backup] htdocs ok: ${WORK}/htdocs.tar.gz"
-  else
-    echo "[backup] htdocs nicht gefunden, skip."
   fi
 else
   echo "[backup] htdocs optional: nutze '--with-htdocs' wenn gewuenscht."
 fi
 
-# project/ tar
-tar -C "${WORK}" -czf "${WORK}/project.tar.gz" "project"
-
-# manifest
-cat > "${WORK}/manifest.json" <<EOF
+cat > "${WORK}/manifest.json" <<EOF_MANIFEST
 {
+  "format_version": 2,
   "created_at": "$(date -Iseconds)",
   "project_dir": "${PROJECT_DIR}",
   "includes": {
     "db_all_databases": true,
     "project_tar": true,
-    "htdocs_tar": $( [[ "${WITH_HTDOCS}" == "--with-htdocs" ]] && echo true || echo false )
+    "ftp_users_sqlite": $( [[ -f "${PROJECT_DIR}/ftp/users.sqlite" ]] && echo true || echo false ),
+    "htdocs_tar": $( [[ -f "${WORK}/htdocs.tar.gz" ]] && echo true || echo false )
   }
 }
-EOF
+EOF_MANIFEST
 
-# Finales Archiv
-tar -C "${WORK}" -czf "${OUT}" "db" "project.tar.gz" "manifest.json" $( [[ -f "${WORK}/htdocs.tar.gz" ]] && echo "htdocs.tar.gz" || true )
+items=("db" "project.tar.gz" "manifest.json")
+[[ -f "${WORK}/htdocs.tar.gz" ]] && items+=("htdocs.tar.gz")
+tar -C "${WORK}" -czf "${OUT}" "${items[@]}"
+chmod 600 "${OUT}"
 
-# Cleanup workdir
-rm -rf "${WORK}"
+# The UI and sudo-driven backups may run as root, but artifacts live in the
+# user-owned WSL project. Hand the final archive back to the canonical host ID.
+if [[ "$(id -u)" == "0" ]]; then
+  PUID="$(read_env_value PUID)"
+  PGID="$(read_env_value PGID)"
+  if [[ "$PUID" =~ ^[0-9]+$ && "$PGID" =~ ^[0-9]+$ ]]; then
+    chown "${PUID}:${PGID}" "${OUT}"
+  fi
+fi
 
 echo "[backup] Fertig: ${OUT}"
-

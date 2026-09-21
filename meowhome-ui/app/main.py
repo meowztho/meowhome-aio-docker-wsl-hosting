@@ -1,9 +1,10 @@
-﻿import os
+import os
 import time
 import pathlib
 import re
 import subprocess
 import html as html_lib
+import json
 from typing import Optional, Dict, Any, List, Tuple
 import secrets
 
@@ -28,6 +29,19 @@ UI_USER = os.getenv("MEOWHOME_UI_USER", "admin")
 UI_PASS = os.getenv("MEOWHOME_UI_PASS", "admin")
 
 SETUP_KEYS = [
+    "PUID",
+    "PGID",
+    "HTTP_BIND",
+    "HTTP_PORT",
+    "HTTPS_BIND",
+    "HTTPS_PORT",
+    "PHPMYADMIN_BIND",
+    "PHPMYADMIN_PORT",
+    "FTP_BIND",
+    "FTP_PORT",
+    "FTP_PASV_MIN",
+    "FTP_PASV_MAX",
+    "FTP_CERT_DOMAIN",
     "DOMAINS",
     "LE_EMAIL",
     "CERTBOT_ENABLED",
@@ -61,6 +75,18 @@ BOOL_KEYS = {
 }
 
 ALLOWED_ACME = {"dns", "http"}
+FTP_USERNAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
+ALLOWED_CONTAINERS = {
+    "meowhome_apache",
+    "meowhome_php",
+    "meowhome_db",
+    "meowhome_pma",
+    "meowhome_certbot",
+    "meowhome_dns_updater",
+    "meowhome_ftp",
+    "meowhome_ui",
+}
+RUNTIME_SERVICES = ["web", "php", "mariadb", "phpmyadmin", "certbot", "dns_updater", "ftp"]
 
 security = HTTPBasic()
 templates = Jinja2Templates(directory=str(pathlib.Path(__file__).parent / "templates"))
@@ -83,19 +109,27 @@ def get_docker_client() -> docker.DockerClient:
         raise HTTPException(status_code=500, detail=f"Docker nicht erreichbar: {e}")
 
 
-def sh(cmd: List[str], cwd: Optional[str] = None, timeout: int = 120) -> subprocess.CompletedProcess:
+def sh(
+    cmd: List[str],
+    cwd: Optional[str] = None,
+    timeout: int = 120,
+    input_text: Optional[str] = None,
+) -> subprocess.CompletedProcess:
     return subprocess.run(
         cmd,
         cwd=cwd,
         capture_output=True,
         text=True,
+        input=input_text,
         timeout=timeout,
         check=False,
     )
 
 
 def compose(cmd_args: List[str], timeout: int = 300) -> subprocess.CompletedProcess:
-    # stabil: wir nutzen docker-compose (standalone)
+    probe = sh(["docker", "compose", "version"], cwd=PROJECT_DIR, timeout=15)
+    if probe.returncode == 0:
+        return sh(["docker", "compose"] + cmd_args, cwd=PROJECT_DIR, timeout=timeout)
     return sh(["docker-compose"] + cmd_args, cwd=PROJECT_DIR, timeout=timeout)
 
 
@@ -261,6 +295,8 @@ def html_autorefresh(
 
 
 def container_by_name(dc: docker.DockerClient, name: str):
+    if name not in ALLOWED_CONTAINERS:
+        raise HTTPException(status_code=403, detail="Container ist nicht Teil des MeowHome-Vertrags")
     try:
         return dc.containers.get(name)
     except NotFound:
@@ -276,10 +312,36 @@ def tail_logs(dc: docker.DockerClient, name: str, lines: int = 200) -> str:
         return f"[log error] {e}"
 
 
-def safe_write_file(path: str, content: str) -> None:
+def host_uid_gid() -> Optional[Tuple[int, int]]:
+    try:
+        values: Dict[str, str] = {}
+        for raw in pathlib.Path(ENV_PATH).read_text(encoding="utf-8", errors="replace").splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            if key.strip() in {"PUID", "PGID"}:
+                values[key.strip()] = value.strip().strip("\"'")
+        uid = int(values.get("PUID", ""))
+        gid = int(values.get("PGID", ""))
+        return uid, gid
+    except (OSError, ValueError):
+        return None
+
+
+def set_host_file_metadata(path: pathlib.Path, mode: int) -> None:
+    os.chmod(path, mode)
+    if os.geteuid() == 0:
+        ids = host_uid_gid()
+        if ids is not None:
+            os.chown(path, ids[0], ids[1])
+
+
+def safe_write_file(path: str, content: str, mode: int = 0o644) -> None:
     p = pathlib.Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(content, encoding="utf-8")
+    set_host_file_metadata(p, mode)
 
 
 def backup_file(path: str) -> Optional[str]:
@@ -289,6 +351,7 @@ def backup_file(path: str) -> Optional[str]:
     ts = time.strftime("%Y%m%d-%H%M%S")
     backup = p.with_suffix(p.suffix + f".bak.{ts}")
     backup.write_bytes(p.read_bytes())
+    set_host_file_metadata(backup, p.stat().st_mode & 0o777)
     return str(backup)
 
 
@@ -299,8 +362,13 @@ def apache_test_and_reload() -> Dict[str, Any]:
 
     reloadp = sh(["docker", "exec", "meowhome_apache", "apachectl", "-k", "graceful"], timeout=30)
     if reloadp.returncode != 0:
-        sh(["docker", "restart", "meowhome_apache"], timeout=60)
-        return {"ok": True, "step": "docker restart fallback", "stdout": reloadp.stdout, "stderr": reloadp.stderr}
+        restart = sh(["docker", "restart", "meowhome_apache"], timeout=60)
+        return {
+            "ok": restart.returncode == 0,
+            "step": "docker restart fallback",
+            "stdout": "\n".join(x for x in (reloadp.stdout, restart.stdout) if x),
+            "stderr": "\n".join(x for x in (reloadp.stderr, restart.stderr) if x),
+        }
 
     return {"ok": True, "step": "apachectl -k graceful", "stdout": reloadp.stdout, "stderr": reloadp.stderr}
 
@@ -308,7 +376,7 @@ def apache_test_and_reload() -> Dict[str, Any]:
 def list_meowhome_containers(dc: docker.DockerClient) -> List[Dict[str, Any]]:
     out: List[Dict[str, Any]] = []
     for c in dc.containers.list(all=True):
-        if not c.name.startswith("meowhome_"):
+        if c.name not in ALLOWED_CONTAINERS:
             continue
         attrs = getattr(c, "attrs", {}) or {}
         state = (attrs.get("State") or {})
@@ -409,7 +477,8 @@ def env_parse(lines: List[str]) -> Dict[str, str]:
 
 
 def env_set_values(lines: List[str], updates: Dict[str, str]) -> List[str]:
-    # Erhaelt Kommentare/Reihenfolge bestmoeglich, ersetzt nur KEY= Zeilen oder haengt an.
+    # Preserve comments/order while collapsing duplicate assignments for keys
+    # managed by this form. One key -> one effective source of truth.
     existing_keys = set()
     out: List[str] = []
 
@@ -417,8 +486,9 @@ def env_set_values(lines: List[str], updates: Dict[str, str]) -> List[str]:
         if "=" in line and not line.lstrip().startswith("#"):
             k = line.split("=", 1)[0].strip()
             if k in updates:
-                out.append(f"{k}={updates[k]}\n")
-                existing_keys.add(k)
+                if k not in existing_keys:
+                    out.append(f"{k}={updates[k]}\n")
+                    existing_keys.add(k)
                 continue
         out.append(line)
 
@@ -435,11 +505,9 @@ def env_set_values(lines: List[str], updates: Dict[str, str]) -> List[str]:
 
 
 def env_backup_file() -> Optional[str]:
-    if not os.path.exists(ENV_PATH):
-        return None
-    ts = time.strftime("%Y%m%d-%H%M%S")
-    bak = ENV_PATH + f".bak.{ts}"
-    pathlib.Path(bak).write_bytes(pathlib.Path(ENV_PATH).read_bytes())
+    bak = backup_file(ENV_PATH)
+    if bak:
+        set_host_file_metadata(pathlib.Path(bak), 0o600)
     return bak
 
 
@@ -468,6 +536,23 @@ def validate_email(email: str) -> str:
         raise HTTPException(status_code=400, detail="LE_EMAIL ungueltig")
     return e
 
+
+
+def validate_port(value: str, field: str) -> str:
+    raw = (value or "").strip()
+    try:
+        port = int(raw)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"{field} muss eine Portnummer sein")
+    if not 1 <= port <= 65535:
+        raise HTTPException(status_code=400, detail=f"{field} muss zwischen 1 und 65535 liegen")
+    return str(port)
+
+def validate_bind(value: str, field: str) -> str:
+    raw = (value or "").strip()
+    if not raw or any(ch.isspace() for ch in raw) or ":" in raw:
+        raise HTTPException(status_code=400, detail=f"{field} enthaelt eine ungueltige Bind-Adresse")
+    return raw
 
 def resolve_vhost_file(file_name: str) -> pathlib.Path:
     file_name = (file_name or "").strip()
@@ -531,6 +616,8 @@ def container_action(
     action: str = Form(...),
     user: str = Depends(require_auth)
 ):
+    if name == "meowhome_ui":
+        raise HTTPException(status_code=400, detail="Die UI verwaltet ihren eigenen Container nicht; nutze docker compose vom Host.")
     dc = get_docker_client()
     c = container_by_name(dc, name)
 
@@ -567,17 +654,21 @@ def compose_action(
 ):
     action = action.strip().lower()
     if action == "up":
-        res = compose(["up", "-d"], timeout=600)
+        res = compose(["up", "-d"] + RUNTIME_SERVICES, timeout=600)
     elif action == "pull":
         res = compose(["pull"], timeout=600)
     elif action == "build":
         res = compose(["build", "--pull"], timeout=900)
     elif action == "recreate":
-        res = compose(["up", "-d", "--force-recreate"], timeout=900)
+        res = compose(["up", "-d", "--force-recreate"] + RUNTIME_SERVICES, timeout=900)
     else:
         raise HTTPException(status_code=400, detail="Unknown compose action")
 
-    return render_text_page("Compose output", f"{res.stdout}\n{res.stderr}")
+    return render_text_page(
+        "Compose output",
+        f"{res.stdout}\n{res.stderr}",
+        status_code=200 if res.returncode == 0 else 400,
+    )
 
 
 # ----------------------------
@@ -671,8 +762,13 @@ def backup_create(
 @app.get("/backup/download")
 def backup_download(file: str, user: str = Depends(require_auth)):
     name = sanitize_backup_name(file)
-    p = pathlib.Path(BACKUPS_DIR) / name
-    if not p.exists():
+    base = pathlib.Path(BACKUPS_DIR).resolve()
+    p = (base / name).resolve()
+    try:
+        p.relative_to(base)
+    except ValueError:
+        raise HTTPException(status_code=403, detail="Zugriff verweigert")
+    if not p.is_file():
         raise HTTPException(status_code=404, detail="Backup nicht gefunden")
     return FileResponse(str(p), filename=name, media_type="application/gzip")
 
@@ -712,6 +808,19 @@ def setup_save(
     request: Request,
     user: str = Depends(require_auth),
 
+    # Network / published ports
+    HTTP_BIND: str = Form("0.0.0.0"),
+    HTTP_PORT: str = Form("80"),
+    HTTPS_BIND: str = Form("0.0.0.0"),
+    HTTPS_PORT: str = Form("443"),
+    PHPMYADMIN_BIND: str = Form("127.0.0.1"),
+    PHPMYADMIN_PORT: str = Form("8080"),
+    FTP_BIND: str = Form("0.0.0.0"),
+    FTP_PORT: str = Form("21"),
+    FTP_PASV_MIN: str = Form("21000"),
+    FTP_PASV_MAX: str = Form("21010"),
+    FTP_CERT_DOMAIN: str = Form(""),
+
     # Basics
     DOMAINS: str = Form(""),
     LE_EMAIL: str = Form(""),
@@ -734,10 +843,25 @@ def setup_save(
     MEOWHOME_UI_USER: str = Form(""),
     MEOWHOME_UI_PASS: str = Form(""),
 ):
+    global UI_USER, UI_PASS
     lines = env_read_raw()
     updates: Dict[str, str] = {}
 
     # Validation / normalization
+    updates["HTTP_BIND"] = validate_bind(HTTP_BIND, "HTTP_BIND")
+    updates["HTTP_PORT"] = validate_port(HTTP_PORT, "HTTP_PORT")
+    updates["HTTPS_BIND"] = validate_bind(HTTPS_BIND, "HTTPS_BIND")
+    updates["HTTPS_PORT"] = validate_port(HTTPS_PORT, "HTTPS_PORT")
+    updates["PHPMYADMIN_BIND"] = validate_bind(PHPMYADMIN_BIND, "PHPMYADMIN_BIND")
+    updates["PHPMYADMIN_PORT"] = validate_port(PHPMYADMIN_PORT, "PHPMYADMIN_PORT")
+    updates["FTP_BIND"] = validate_bind(FTP_BIND, "FTP_BIND")
+    updates["FTP_PORT"] = validate_port(FTP_PORT, "FTP_PORT")
+    updates["FTP_PASV_MIN"] = validate_port(FTP_PASV_MIN, "FTP_PASV_MIN")
+    updates["FTP_PASV_MAX"] = validate_port(FTP_PASV_MAX, "FTP_PASV_MAX")
+    if int(updates["FTP_PASV_MIN"]) > int(updates["FTP_PASV_MAX"]):
+        raise HTTPException(status_code=400, detail="FTP_PASV_MIN darf nicht groesser als FTP_PASV_MAX sein")
+    updates["FTP_CERT_DOMAIN"] = (FTP_CERT_DOMAIN or "").strip().lower()
+
     updates["DOMAINS"] = validate_domains(DOMAINS)
     updates["LE_EMAIL"] = validate_email(LE_EMAIL)
 
@@ -778,9 +902,15 @@ def setup_save(
     bak = env_backup_file()
     new_lines = env_set_values(lines, updates)
     pathlib.Path(ENV_PATH).write_text("".join(new_lines), encoding="utf-8")
+    set_host_file_metadata(pathlib.Path(ENV_PATH), 0o600)
+
+    # UI Basic Auth values are process globals. Apply changed credentials now;
+    # self-recreating this container from inside itself is inherently racy.
+    env_after = env_parse(new_lines)
+    UI_USER = env_after.get("MEOWHOME_UI_USER", UI_USER) or UI_USER
+    UI_PASS = env_after.get("MEOWHOME_UI_PASS", UI_PASS) or UI_PASS
 
     # Page neu rendern (maskiert)
-    env_after = env_parse(new_lines)
     view: Dict[str, str] = {}
     for k in SETUP_KEYS:
         view[k] = mask_value(k, env_after.get(k, ""))
@@ -795,26 +925,12 @@ def setup_save(
         "env_path": ENV_PATH,
         "saved": True,
         "backup_file": bak or "",
-        "note": "Gespeichert. Aenderungen werden beim naechsten docker compose recreate wirksam (auch fuer UI Login-Daten).",
+        "note": "Gespeichert. Neue UI Login-Daten gelten sofort fuer neue Requests; andere Service-Einstellungen werden beim naechsten Compose-Reconcile wirksam.",
     })
 
 
-@app.post("/setup/recreate-ui")
-def setup_recreate_ui(user: str = Depends(require_auth)):
-    res = compose(["up", "-d", "--force-recreate", "ui"], timeout=900)
-    text = (res.stdout + "\n" + res.stderr).strip()
-    if res.returncode != 0:
-        return render_text_page(
-            "UI recreate failed",
-            text or "docker compose up -d --force-recreate ui fehlgeschlagen.",
-            back_url="/setup",
-            status_code=500,
-        )
-    return render_text_page("UI recreate output", text or "UI wurde neu erstellt.", back_url="/setup")
-
-
 # ----------------------------
-# FTP User Management (nutzt tools/ftp/meowftp.py)
+# FTP User Management (core owner: tools/ftp/meowftp.py + ftp/users.sqlite)
 # ----------------------------
 
 def meowftp_py() -> str:
@@ -824,13 +940,42 @@ def meowftp_py() -> str:
     return p
 
 
+def ftp_run(args: List[str], *, timeout: int = 60, input_text: Optional[str] = None) -> subprocess.CompletedProcess:
+    return sh(["python3", meowftp_py()] + args, cwd=PROJECT_DIR, timeout=timeout, input_text=input_text)
+
+
+def ftp_state() -> Dict[str, Any]:
+    res = ftp_run(["list", "--json"], timeout=60)
+    if res.returncode != 0:
+        raise HTTPException(status_code=500, detail=(res.stderr or res.stdout or "FTP state unavailable").strip())
+    try:
+        data = json.loads(res.stdout)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=500, detail=f"FTP state JSON ungueltig: {exc}") from exc
+    if not isinstance(data, dict):
+        raise HTTPException(status_code=500, detail="FTP state JSON hat ein unerwartetes Format")
+    return data
+
+
+def ftp_apply_or_error(prefix: str, result: subprocess.CompletedProcess) -> Optional[HTMLResponse]:
+    if result.returncode != 0:
+        text = "\n".join([prefix, result.stdout, result.stderr]).strip()
+        return render_text_page("FTP command failed", text, back_url="/ftp", status_code=400)
+    apply_result = ftp_run(["apply"], timeout=600)
+    if apply_result.returncode != 0:
+        text = "\n".join([prefix, result.stdout, result.stderr, "=== apply ===", apply_result.stdout, apply_result.stderr]).strip()
+        return render_text_page("FTP apply failed", text, back_url="/ftp", status_code=400)
+    return None
+
+
 @app.get("/ftp", response_class=HTMLResponse)
 def ftp_page(request: Request, user: str = Depends(require_auth)):
-    res = sh(["python", meowftp_py(), "list"], cwd=PROJECT_DIR, timeout=60)
+    state = ftp_state()
     resp = templates.TemplateResponse("ftp.html", {
         "request": request,
         "user": user,
-        "list_out": (res.stdout + "\n" + res.stderr).strip(),
+        "users": state.get("users", []),
+        "domains": state.get("available_domains", []),
     })
     resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
     resp.headers["Pragma"] = "no-cache"
@@ -842,113 +987,120 @@ def ftp_page(request: Request, user: str = Depends(require_auth)):
 def ftp_add(
     username: str = Form(...),
     password: str = Form(...),
-    home_rel: str = Form(""),
+    domains: Optional[List[str]] = Form(None),
     allow_all: Optional[str] = Form(None),
-    user: str = Depends(require_auth)
+    user: str = Depends(require_auth),
 ):
     username = username.strip()
-    home_rel = home_rel.strip()
+    selected = [d.strip() for d in (domains or []) if d.strip()]
+    allow_all_enabled = (allow_all or "").strip().lower() in ("1", "true", "yes", "on")
 
-    if not username:
-        raise HTTPException(status_code=400, detail="username leer")
-    
-    # Input validation: username = alphanumeric, underscore, hyphen
-    if not all(c.isalnum() or c in "_-" for c in username):
-        raise HTTPException(status_code=400, detail="username nur alphanumeric, _, - erlaubt")
-    if len(username) > 32:
-        raise HTTPException(status_code=400, detail="username zu lang (max 32 chars)")
-    
-    # home_rel validation (if provided): only relative paths allowed
-    if home_rel:
-        if ".." in home_rel:
-            raise HTTPException(status_code=400, detail="home_rel: parent directory (..) nicht erlaubt")
-        if home_rel.startswith("/"):
-            raise HTTPException(status_code=400, detail="home_rel: absolute Pfade (/) nicht erlaubt, nur relative")
-        if any(c.isspace() for c in home_rel):
-            raise HTTPException(status_code=400, detail="home_rel: keine Leerzeichen erlaubt")
+    if not FTP_USERNAME_RE.fullmatch(username):
+        raise HTTPException(status_code=400, detail="username muss 1-32 Zeichen lang sein und darf nur A-Z, a-z, 0-9, _, - enthalten")
+    if not password:
+        raise HTTPException(status_code=400, detail="Passwort darf nicht leer sein")
+    if allow_all_enabled and selected:
+        raise HTTPException(status_code=400, detail="Entweder Vollzugriff oder konkrete Domains auswaehlen, nicht beides")
+    if not allow_all_enabled and not selected:
+        raise HTTPException(status_code=400, detail="Mindestens eine Domain auswaehlen oder Vollzugriff aktivieren")
+
+    initial_home = "" if allow_all_enabled else selected[0]
+    add_args = ["add", username, initial_home, "--password-stdin"]
+    if allow_all_enabled:
+        add_args.append("--allow-all")
+    res_add = ftp_run(add_args, input_text=password + "\n")
+    if res_add.returncode != 0:
+        return render_text_page("FTP add failed", (res_add.stdout + "\n" + res_add.stderr).strip(), back_url="/ftp", status_code=400)
+
+    if allow_all_enabled:
+        access_result = ftp_run(["all", username])
     else:
-        allow_all_enabled = (allow_all or "").strip().lower() in ("1", "true", "yes", "on")
-        if not allow_all_enabled:
-            raise HTTPException(
-                status_code=400,
-                detail="Leeres home_rel bedeutet Zugriff auf alles unter htdocs. Bitte Checkbox 'Vollzugriff' aktivieren.",
-            )
+        access_result = ftp_run(["assign", username] + selected)
+    if access_result.returncode != 0:
+        return render_text_page(
+            "FTP access assignment failed",
+            "\n".join([res_add.stdout, res_add.stderr, access_result.stdout, access_result.stderr]).strip(),
+            back_url="/ftp",
+            status_code=400,
+        )
 
-    add_cmd = ["python", meowftp_py(), "add", username, home_rel, password]
-    if not home_rel:
-        add_cmd.append("--allow-all")
-    res_add = sh(add_cmd, cwd=PROJECT_DIR, timeout=60)
-    res_apply = sh(["python", meowftp_py(), "apply"], cwd=PROJECT_DIR, timeout=600)
+    error = ftp_apply_or_error("=== access ===", access_result)
+    if error:
+        return error
+    return RedirectResponse(url="/ftp", status_code=303)
 
-    text = "\n".join([
-        "=== add ===", res_add.stdout, res_add.stderr,
-        "=== apply ===", res_apply.stdout, res_apply.stderr,
-    ]).strip()
 
-    if res_add.returncode != 0 or res_apply.returncode != 0:
-        return render_text_page("FTP command failed", text, back_url="/ftp", status_code=400)
+@app.post("/ftp/access")
+def ftp_access(
+    username: str = Form(...),
+    domains: Optional[List[str]] = Form(None),
+    allow_all: Optional[str] = Form(None),
+    user: str = Depends(require_auth),
+):
+    username = username.strip()
+    selected = [d.strip() for d in (domains or []) if d.strip()]
+    allow_all_enabled = (allow_all or "").strip().lower() in ("1", "true", "yes", "on")
+    if not FTP_USERNAME_RE.fullmatch(username):
+        raise HTTPException(status_code=400, detail="ungueltiger FTP username")
+    if allow_all_enabled and selected:
+        raise HTTPException(status_code=400, detail="Entweder Vollzugriff oder konkrete Domains auswaehlen")
+    if allow_all_enabled:
+        res = ftp_run(["all", username])
+    elif selected:
+        res = ftp_run(["assign", username] + selected)
+    else:
+        raise HTTPException(status_code=400, detail="Mindestens eine Domain auswaehlen")
+    error = ftp_apply_or_error("=== access ===", res)
+    if error:
+        return error
+    return RedirectResponse(url="/ftp", status_code=303)
 
-    return html_autorefresh("/ftp", seconds=2, title="FTP User hinzugefuegt", body="User wurde gespeichert und apply wurde ausgefuehrt.")
+
+@app.post("/ftp/passwd")
+def ftp_passwd(
+    username: str = Form(...),
+    password: str = Form(...),
+    user: str = Depends(require_auth),
+):
+    username = username.strip()
+    if not FTP_USERNAME_RE.fullmatch(username):
+        raise HTTPException(status_code=400, detail="ungueltiger FTP username")
+    if not password:
+        raise HTTPException(status_code=400, detail="Passwort darf nicht leer sein")
+    res = ftp_run(["passwd", username, "--password-stdin"], input_text=password + "\n")
+    error = ftp_apply_or_error("=== passwd ===", res)
+    if error:
+        return error
+    return RedirectResponse(url="/ftp", status_code=303)
 
 
 @app.post("/ftp/del")
-def ftp_del(
-    username: str = Form(...),
-    user: str = Depends(require_auth)
-):
+def ftp_del(username: str = Form(...), user: str = Depends(require_auth)):
     username = username.strip()
-    
-    # Input validation
-    if not username:
-        raise HTTPException(status_code=400, detail="username leer")
-    if not all(c.isalnum() or c in "_-" for c in username):
-        raise HTTPException(status_code=400, detail="username nur alphanumeric, _, - erlaubt")
-    if len(username) > 32:
-        raise HTTPException(status_code=400, detail="username zu lang (max 32 chars)")
-    res_del = sh(["python", meowftp_py(), "del", username], cwd=PROJECT_DIR, timeout=60)
-    res_apply = sh(["python", meowftp_py(), "apply"], cwd=PROJECT_DIR, timeout=600)
-
-    text = "\n".join([
-        "=== del ===", res_del.stdout, res_del.stderr,
-        "=== apply ===", res_apply.stdout, res_apply.stderr,
-    ]).strip()
-
-    if res_del.returncode != 0 or res_apply.returncode != 0:
-        return render_text_page("FTP command failed", text, back_url="/ftp", status_code=400)
-
-    return html_autorefresh("/ftp", seconds=2, title="FTP User geloescht", body="User wurde geloescht und apply wurde ausgefuehrt.")
+    if not FTP_USERNAME_RE.fullmatch(username):
+        raise HTTPException(status_code=400, detail="ungueltiger FTP username")
+    res = ftp_run(["del", username])
+    error = ftp_apply_or_error("=== delete ===", res)
+    if error:
+        return error
+    return RedirectResponse(url="/ftp", status_code=303)
 
 
 @app.post("/ftp/enable")
 def ftp_enable(
     username: str = Form(...),
     enabled: str = Form(...),
-    user: str = Depends(require_auth)
+    user: str = Depends(require_auth),
 ):
     username = username.strip()
-    enabled = enabled.strip().lower()
-    
-    # Input validation
-    if not username:
-        raise HTTPException(status_code=400, detail="username leer")
-    if not all(c.isalnum() or c in "_-" for c in username):
-        raise HTTPException(status_code=400, detail="username nur alphanumeric, _, - erlaubt")
-    if len(username) > 32:
-        raise HTTPException(status_code=400, detail="username zu lang (max 32 chars)")
-
-    cmd = "enable" if enabled in ("1", "true", "yes", "on") else "disable"
-    res = sh(["python", meowftp_py(), cmd, username], cwd=PROJECT_DIR, timeout=60)
-    res_apply = sh(["python", meowftp_py(), "apply"], cwd=PROJECT_DIR, timeout=600)
-
-    text = "\n".join([
-        f"=== {cmd} ===", res.stdout, res.stderr,
-        "=== apply ===", res_apply.stdout, res_apply.stderr,
-    ]).strip()
-
-    if res.returncode != 0 or res_apply.returncode != 0:
-        return render_text_page("FTP command failed", text, back_url="/ftp", status_code=400)
-
-    return html_autorefresh("/ftp", seconds=2, title="FTP User aktualisiert", body="Status wurde geaendert und apply wurde ausgefuehrt.")
+    if not FTP_USERNAME_RE.fullmatch(username):
+        raise HTTPException(status_code=400, detail="ungueltiger FTP username")
+    cmd = "enable" if enabled.strip().lower() in ("1", "true", "yes", "on") else "disable"
+    res = ftp_run([cmd, username])
+    error = ftp_apply_or_error(f"=== {cmd} ===", res)
+    if error:
+        return error
+    return RedirectResponse(url="/ftp", status_code=303)
 
 
 # ----------------------------
@@ -1003,6 +1155,7 @@ def vhosts_save(
     if not result.get("ok"):
         if bak and os.path.exists(bak):
             pathlib.Path(full).write_bytes(pathlib.Path(bak).read_bytes())
+            set_host_file_metadata(pathlib.Path(full), 0o644)
         details = "\n".join([
             "Apache config test failed. Changes were rolled back.",
             "",
@@ -1047,6 +1200,7 @@ def vhosts_delete(
     if not result.get("ok"):
         if bak and os.path.exists(bak):
             pathlib.Path(full).write_bytes(pathlib.Path(bak).read_bytes())
+            set_host_file_metadata(pathlib.Path(full), 0o644)
         details = "\n".join([
             "Apache config test failed. Deletion was rolled back.",
             "",
@@ -1064,9 +1218,22 @@ def vhosts_delete(
 
 @app.post("/certbot/renew")
 def certbot_renew(user: str = Depends(require_auth)):
-    res = sh(["docker", "exec", "meowhome_certbot", "sh", "-lc", "certbot renew --non-interactive || true"], timeout=180)
+    res = sh(["docker", "exec", "meowhome_certbot", "certbot", "renew", "--non-interactive"], timeout=180)
     text = (res.stdout + "\n" + res.stderr).strip()
-    return render_text_page("Certbot renew output", text)
+    if res.returncode != 0:
+        return render_text_page("Certbot renew failed", text, status_code=400)
+
+    reload_result = apache_test_and_reload()
+    if not reload_result.get("ok"):
+        details = "\n".join([
+            text,
+            "",
+            "Certificate renewal completed, but Apache reload failed.",
+            reload_result.get("stdout", ""),
+            reload_result.get("stderr", ""),
+        ]).strip()
+        return render_text_page("Certbot renew warning", details, status_code=500)
+    return render_text_page("Certbot renew output", text or "Renew completed; Apache reloaded.")
 
 
 @app.post("/dns/run")

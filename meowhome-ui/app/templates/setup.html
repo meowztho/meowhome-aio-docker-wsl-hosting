@@ -1,158 +1,105 @@
 {% extends "base.html" %}
 {% block content %}
-<h2>Setup</h2>
-
-<p class="muted">
-  Diese Seite hilft bei der Grundkonfiguration, wenn MeowHome bereits gebaut wurde.
-  Datei: <code>{{ env_path }}</code>
-</p>
-
-{% if saved %}
-  <div class="card">
-    <strong>Gespeichert.</strong><br>
-    {% if backup_file %}
-      Backup der alten .env: <code>{{ backup_file }}</code><br>
-    {% endif %}
-    <span class="muted">{{ note }}</span>
+<div class="page-header split">
+  <div>
+    <div class="eyebrow">Core configuration</div>
+    <h1>Setup</h1>
+    <p class="muted">Quelle: <code>{{ env_path }}</code>. Änderungen bleiben bei Upgrades erhalten.</p>
   </div>
-  <br>
-{% endif %}
-
-<div class="row">
-  <div class="card">
-    <h3>1) Grundkonfiguration (.env)</h3>
-
-    <form method="post" action="/setup/save">
-      <label>DOMAINS (comma-separated)</label><br>
-      <input name="DOMAINS" style="width:100%;" value="{{ env.DOMAINS }}"><br><br>
-
-      <label>LE_EMAIL</label><br>
-      <input name="LE_EMAIL" style="width:100%;" value="{{ env.LE_EMAIL }}"><br><br>
-
-      <label>ACME_CHALLENGE</label><br>
-      <select name="ACME_CHALLENGE">
-        <option value="dns" {% if env.ACME_CHALLENGE == "dns" %}selected{% endif %}>dns (default)</option>
-        <option value="http" {% if env.ACME_CHALLENGE == "http" %}selected{% endif %}>http (fallback)</option>
-      </select>
-      <p class="muted">
-        Hinweis: http benoetigt Port 80 extern erreichbar und unterstuetzt kein Wildcard (*.domain).
-      </p>
-
-      <label>
-        <input type="checkbox" name="CERTBOT_ENABLED" value="true" {% if env.CERTBOT_ENABLED == "true" %}checked{% endif %}>
-        CERTBOT_ENABLED
-      </label><br>
-
-      <label>
-        <input type="checkbox" name="DNS_UPDATER_ENABLED" value="true" {% if env.DNS_UPDATER_ENABLED == "true" %}checked{% endif %}>
-        DNS_UPDATER_ENABLED
-      </label><br><br>
-
-      <label>DNS_PROVIDER</label><br>
-      <input name="DNS_PROVIDER" style="width:100%;" value="{{ env.DNS_PROVIDER }}"><br><br>
-
-      <label>CLOUDFLARE_API_TOKEN (leave empty to keep)</label><br>
-      <input name="CLOUDFLARE_API_TOKEN" style="width:100%;" value=""><br>
-      <p class="muted">Wird nicht angezeigt. Leer lassen = unveraendert.</p>
-
-      <hr>
-
-      <label>FTP_PUBLIC_HOST</label><br>
-      <input name="FTP_PUBLIC_HOST" style="width:100%;" value="{{ env.FTP_PUBLIC_HOST }}"><br><br>
-
-      <label>
-        <input type="checkbox" name="FTP_TLS" value="true" {% if env.FTP_TLS == "YES" %}checked{% endif %}>
-        FTP_TLS (FTPS)
-      </label><br><br>
-
-      <hr>
-
-      <label>DB_ROOT_PASSWORD (leave empty to keep)</label><br>
-      <input type="password" name="DB_ROOT_PASSWORD" style="width:100%;" value=""><br><br>
-
-      <label>DB_PASSWORD (leave empty to keep)</label><br>
-      <input type="password" name="DB_PASSWORD" style="width:100%;" value=""><br><br>
-
-      <label>DB_USER</label><br>
-      <input name="DB_USER" style="width:100%;" value="{{ env.DB_USER }}"><br><br>
-
-      <label>DB_NAME</label><br>
-      <input name="DB_NAME" style="width:100%;" value="{{ env.DB_NAME }}"><br><br>
-
-      <label>
-        <input type="checkbox" name="PROXIED_DEFAULT" value="true" {% if env.PROXIED_DEFAULT == "true" %}checked{% endif %}>
-        PROXIED_DEFAULT
-      </label><br><br>
-
-      <hr>
-
-      <h4>MeowHome UI Login</h4>
-      <label>MEOWHOME_UI_USER</label><br>
-      <input name="MEOWHOME_UI_USER" style="width:100%;" value="{{ env.MEOWHOME_UI_USER }}"><br><br>
-
-      <label>MEOWHOME_UI_PASS (leave empty to keep)</label><br>
-      <input type="password" name="MEOWHOME_UI_PASS" style="width:100%;" value=""><br>
-      <p class="muted">Neue Login-Daten werden nach "docker compose up -d --force-recreate ui" aktiv.</p>
-      <button class="btn" type="submit" formaction="/setup/recreate-ui" formmethod="post">UI jetzt neu erstellen</button>
-      <p class="muted">Fuehrt aus: docker compose up -d --force-recreate ui</p>
-      <p class="muted">Hinweis: Dabei kann die UI kurzzeitig nicht erreichbar sein.</p>
-
-      <button class="btn" type="submit">Save .env</button>
-    </form>
-  </div>
-
-  <div class="card">
-    <h3>2) Zertifikate (Status)</h3>
-    {% if certs|length == 0 %}
-      <p class="muted">Kein DOMAINS gesetzt oder keine Daten verfuegbar.</p>
-    {% else %}
-      <table border="1" cellpadding="6" cellspacing="0">
-        <thead>
-          <tr>
-            <th>Domain</th>
-            <th>Status</th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for c in certs %}
-          <tr>
-            <td>{{ c.domain }}</td>
-            <td>
-              {% if c.exists %}
-                vorhanden
-              {% else %}
-                fehlt
-              {% endif %}
-            </td>
-          </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-    {% endif %}
-
-    <p class="muted">
-      Fuer Details: <a href="/container/meowhome_certbot/logs?lines=200">certbot logs</a>
-    </p>
-
-    <hr>
-
-    <h3>3) Naechste Schritte</h3>
-    <ul>
-      <li><a href="/vhosts">VHosts</a>: VirtualHosts erstellen/pruefen</li>
-      <li><a href="/ftp">FTP</a>: FTP User anlegen / apply</li>
-      <li><a href="/backup">Backup</a>: erstes Backup erstellen</li>
-      <li><a href="/health">Health</a>: Container Status pruefen</li>
-    </ul>
-
-    <hr>
-
-    <h3>Ports (Hinweis)</h3>
-    <ul>
-      <li>80, 443 (HTTP/HTTPS)</li>
-      <li>21 (FTP)</li>
-      <li>21000-21010 (FTP Passive)</li>
-    </ul>
-  </div>
+  <a class="btn" href="/health">Health prüfen</a>
 </div>
 
+{% if saved %}
+<div class="notice">
+  <strong>Gespeichert.</strong> {{ note }}
+  {% if backup_file %}<div class="muted">Vorherige .env: <code>{{ backup_file }}</code></div>{% endif %}
+</div>
+{% endif %}
+
+<form method="post" action="/setup/save" class="stack-lg">
+  <div class="grid">
+    <section class="card col-8">
+      <div class="card-header"><div><div class="eyebrow">Network</div><div class="card-title">Ports & Bindings</div></div></div>
+      <div class="grid">
+        <div class="field col-6"><label>HTTP Bind</label><input name="HTTP_BIND" value="{{ env.HTTP_BIND or '0.0.0.0' }}"><span class="muted">0.0.0.0 = LAN/WAN erreichbar</span></div>
+        <div class="field col-6"><label>HTTP Port</label><input type="number" min="1" max="65535" name="HTTP_PORT" value="{{ env.HTTP_PORT or '80' }}"></div>
+        <div class="field col-6"><label>HTTPS Bind</label><input name="HTTPS_BIND" value="{{ env.HTTPS_BIND or '0.0.0.0' }}"></div>
+        <div class="field col-6"><label>HTTPS Port</label><input type="number" min="1" max="65535" name="HTTPS_PORT" value="{{ env.HTTPS_PORT or '443' }}"></div>
+        <div class="field col-6"><label>phpMyAdmin Bind</label><input name="PHPMYADMIN_BIND" value="{{ env.PHPMYADMIN_BIND or '127.0.0.1' }}"><span class="muted">127.0.0.1 empfohlen</span></div>
+        <div class="field col-6"><label>phpMyAdmin Port</label><input type="number" min="1" max="65535" name="PHPMYADMIN_PORT" value="{{ env.PHPMYADMIN_PORT or '8080' }}"></div>
+        <div class="field col-6"><label>FTP Bind</label><input name="FTP_BIND" value="{{ env.FTP_BIND or '0.0.0.0' }}"></div>
+        <div class="field col-6"><label>FTP Control Port</label><input type="number" min="1" max="65535" name="FTP_PORT" value="{{ env.FTP_PORT or '21' }}"></div>
+        <div class="field col-6"><label>FTP Passive von</label><input type="number" min="1" max="65535" name="FTP_PASV_MIN" value="{{ env.FTP_PASV_MIN or '21000' }}"></div>
+        <div class="field col-6"><label>FTP Passive bis</label><input type="number" min="1" max="65535" name="FTP_PASV_MAX" value="{{ env.FTP_PASV_MAX or '21010' }}"></div>
+      </div>
+      <div class="notice warning" style="margin-top:14px;">Portänderungen werden erst beim nächsten <code>docker compose up -d</code> wirksam. Router-/Firewall-Freigaben bleiben außerhalb von MeowHome.</div>
+    </section>
+
+    <aside class="card col-4">
+      <div class="eyebrow">Ownership</div><div class="card-title">WSL-Dateibesitzer</div>
+      <div class="grid" style="margin-top:14px;">
+        <div class="col-6"><div class="muted">PUID</div><div class="kpi">{{ env.PUID }}</div></div>
+        <div class="col-6"><div class="muted">PGID</div><div class="kpi">{{ env.PGID }}</div></div>
+      </div>
+      <div class="notice" style="margin-top:14px;">Diese IDs werden absichtlich nicht in der UI geändert. PHP und FTP schreiben damit direkt in deine WSL-<code>htdocs</code>.</div>
+    </aside>
+  </div>
+
+  <div class="grid">
+    <section class="card col-6">
+      <div class="eyebrow">Domains & TLS</div><div class="card-title">Webhosting</div>
+      <div class="stack" style="margin-top:14px;">
+        <div class="field"><label>Domains</label><input name="DOMAINS" value="{{ env.DOMAINS }}"><span class="muted">Kommagetrennte Zonen, z. B. example.com,test.de</span></div>
+        <div class="field"><label>Let's Encrypt E-Mail</label><input name="LE_EMAIL" value="{{ env.LE_EMAIL }}"></div>
+        <div class="grid">
+          <div class="field col-6"><label>ACME Challenge</label><select name="ACME_CHALLENGE"><option value="dns" {% if env.ACME_CHALLENGE == 'dns' %}selected{% endif %}>DNS-01</option><option value="http" {% if env.ACME_CHALLENGE == 'http' %}selected{% endif %}>HTTP-01</option></select></div>
+          <div class="field col-6"><label>DNS Provider</label><input name="DNS_PROVIDER" value="{{ env.DNS_PROVIDER }}"></div>
+        </div>
+        <label class="check-item"><input type="checkbox" name="CERTBOT_ENABLED" value="true" {% if env.CERTBOT_ENABLED == 'true' %}checked{% endif %}> Certbot aktiv</label>
+        <label class="check-item"><input type="checkbox" name="DNS_UPDATER_ENABLED" value="true" {% if env.DNS_UPDATER_ENABLED == 'true' %}checked{% endif %}> DNS-Updater aktiv</label>
+        <label class="check-item"><input type="checkbox" name="PROXIED_DEFAULT" value="true" {% if env.PROXIED_DEFAULT == 'true' %}checked{% endif %}> Cloudflare Proxy standardmäßig aktiv</label>
+        <div class="field"><label>Cloudflare API Token</label><input type="password" name="CLOUDFLARE_API_TOKEN" value="" placeholder="leer = unverändert"><span class="muted">Secret wird nie zurück angezeigt.</span></div>
+      </div>
+    </section>
+
+    <section class="card col-6">
+      <div class="eyebrow">FTP / FTPS</div><div class="card-title">Externer Zugriff</div>
+      <div class="stack" style="margin-top:14px;">
+        <div class="field"><label>Öffentlicher Host</label><input name="FTP_PUBLIC_HOST" value="{{ env.FTP_PUBLIC_HOST }}"></div>
+        <div class="field"><label>FTPS Zertifikat-Domain</label><input name="FTP_CERT_DOMAIN" value="{{ env.FTP_CERT_DOMAIN }}" placeholder="example.com"></div>
+        <label class="check-item"><input type="checkbox" name="FTP_TLS" value="true" {% if env.FTP_TLS == 'YES' %}checked{% endif %}> FTPS/TLS aktiv</label>
+        <div class="notice">FTP-Benutzer und Domain-Zuweisungen werden separat unter <a href="/ftp">FTP & Domains</a> verwaltet.</div>
+      </div>
+    </section>
+  </div>
+
+  <div class="grid">
+    <section class="card col-6">
+      <div class="eyebrow">Database</div><div class="card-title">MariaDB</div>
+      <div class="stack" style="margin-top:14px;">
+        <div class="field"><label>DB Name</label><input name="DB_NAME" value="{{ env.DB_NAME }}"></div>
+        <div class="field"><label>DB User</label><input name="DB_USER" value="{{ env.DB_USER }}"></div>
+        <div class="field"><label>DB Passwort</label><input type="password" name="DB_PASSWORD" value="" placeholder="leer = unverändert"></div>
+        <div class="field"><label>Root Passwort</label><input type="password" name="DB_ROOT_PASSWORD" value="" placeholder="leer = unverändert"></div>
+      </div>
+    </section>
+    <section class="card col-6">
+      <div class="eyebrow">Control Plane</div><div class="card-title">UI Login</div>
+      <div class="stack" style="margin-top:14px;">
+        <div class="field"><label>Benutzer</label><input name="MEOWHOME_UI_USER" value="{{ env.MEOWHOME_UI_USER }}"></div>
+        <div class="field"><label>Neues Passwort</label><input type="password" name="MEOWHOME_UI_PASS" value="" placeholder="leer = unverändert"></div>
+        <div class="notice">Neue UI-Zugangsdaten gelten direkt nach dem Speichern. Andere Runtime-Werte beim nächsten Compose-Reconcile.</div>
+      </div>
+    </section>
+  </div>
+
+  <div class="toolbar"><button class="btn btn-primary" type="submit">Konfiguration speichern</button><a class="btn" href="/">Abbrechen</a></div>
+</form>
+
+<section class="card" style="margin-top:22px;">
+  <div class="card-header"><div><div class="eyebrow">Certificates</div><div class="card-title">Zertifikatsstatus</div></div></div>
+  {% if certs %}
+  <table><thead><tr><th>Domain</th><th>Status</th></tr></thead><tbody>{% for c in certs %}<tr><td>{{ c.domain }}</td><td><span class="badge {{ 'ok' if c.exists else 'warning' }}">{{ 'vorhanden' if c.exists else 'fehlt' }}</span></td></tr>{% endfor %}</tbody></table>
+  {% else %}<p class="muted">Keine Domains konfiguriert.</p>{% endif %}
+</section>
 {% endblock %}

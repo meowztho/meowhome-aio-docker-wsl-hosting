@@ -1,56 +1,128 @@
-﻿{% extends "base.html" %}
+{% extends "base.html" %}
 {% block content %}
-<h2>FTP Users</h2>
-
-<div class="card">
-  <h3>Current users</h3>
-  <pre>{{ list_out }}</pre>
+<div class="page-header">
+  <div>
+    <div class="eyebrow">Access control</div>
+    <h1>FTP & Domains</h1>
+    <p class="muted">FTP identities live in <code>ftp/users.sqlite</code>. Domain access is applied through the same MeowFTP core used by the CLI.</p>
+  </div>
+  <span class="badge ok">{{ users|length }} user{% if users|length != 1 %}s{% endif %}</span>
 </div>
 
-<div class="card">
-  <h3>Add user</h3>
-  <form method="post" action="/ftp/add">
-    <div>
-      <label>Username</label><br>
-      <input name="username" required>
+<div class="grid">
+  <section class="card col-4">
+    <div class="card-header">
+      <div><h3 class="card-title">New FTP user</h3><p class="muted">One domain opens directly in that domain. Multiple domains show only the assigned folders.</p></div>
     </div>
-    <div>
-      <label>Password</label><br>
-      <input type="password" name="password" required>
-    </div>
-    <div>
-      <label>Home (relative under htdocs, optional)</label><br>
-      <input name="home_rel" placeholder="e.g. shop.example.com">
-    </div>
-    <div style="margin-top:8px;">
-      <label>
-        <input type="checkbox" name="allow_all" value="true">
-        Vollzugriff auf alles unter htdocs erlauben (nur wenn Home leer bleibt)
-      </label>
-    </div>
-    <p class="muted">Nach Add wird automatisch apply ausgefuehrt.</p>
-    <button class="btn" type="submit">Add + Apply</button>
-  </form>
+    <form method="post" action="/ftp/add" class="stack">
+      <div>
+        <label>Username</label>
+        <input name="username" autocomplete="off" required placeholder="webmaster">
+      </div>
+      <div>
+        <label>Password</label>
+        <input type="password" name="password" autocomplete="new-password" required>
+      </div>
+      <div>
+        <label>Domain access</label>
+        {% if domains %}
+        <div class="check-grid">
+          {% for domain in domains %}
+          <div class="check-item">
+            <input id="new-domain-{{ loop.index }}" type="checkbox" name="domains" value="{{ domain }}">
+            <label for="new-domain-{{ loop.index }}">{{ domain }}</label>
+          </div>
+          {% endfor %}
+        </div>
+        {% else %}
+        <div class="notice warning">No top-level folders were found under <code>htdocs/</code>. Create a domain/webroot first.</div>
+        {% endif %}
+      </div>
+      <div class="check-item">
+        <input id="new-allow-all" type="checkbox" name="allow_all" value="true">
+        <label for="new-allow-all">Full access to every folder under htdocs</label>
+      </div>
+      <button class="btn btn-primary" type="submit">Create user & apply</button>
+    </form>
+  </section>
+
+  <section class="col-8 stack-lg">
+    {% if not users %}
+      <div class="card"><div class="notice">No FTP users configured yet.</div></div>
+    {% endif %}
+
+    {% for u in users %}
+    <article class="card">
+      <div class="card-header">
+        <div>
+          <div class="toolbar">
+            <h3 class="card-title">{{ u.username }}</h3>
+            {% if u.enabled %}<span class="badge ok">enabled</span>{% else %}<span class="badge warn">disabled</span>{% endif %}
+            {% if u.access_mode == 'all' %}
+              <span class="badge warn">all domains</span>
+            {% elif u.access_mode == 'domains' %}
+              <span class="badge">{{ u.domains|length }} assigned domain{% if u.domains|length != 1 %}s{% endif %}</span>
+            {% else %}
+              <span class="badge">legacy path</span>
+            {% endif %}
+          </div>
+          {% if u.access_mode == 'path' %}
+            <p class="muted">Current legacy path: <code>htdocs/{{ u.home_rel }}</code>. Saving assignments below migrates this user to domain-based access.</p>
+          {% elif u.access_mode == 'all' %}
+            <p class="muted">This user currently sees every top-level folder under <code>htdocs/</code>.</p>
+          {% elif u.domains|length == 1 %}
+            <p class="muted">FTP root opens directly inside <code>{{ u.domains[0] }}</code>.</p>
+          {% else %}
+            <p class="muted">FTP root contains only the assigned domain folders.</p>
+          {% endif %}
+        </div>
+      </div>
+
+      <div class="grid">
+        <div class="col-8">
+          <form method="post" action="/ftp/access" class="stack">
+            <input type="hidden" name="username" value="{{ u.username }}">
+            <div class="check-grid">
+              {% for domain in domains %}
+              <div class="check-item">
+                <input id="{{ u.username }}-domain-{{ loop.index }}" type="checkbox" name="domains" value="{{ domain }}" {% if u.access_mode == 'domains' and domain in u.domains %}checked{% endif %}>
+                <label for="{{ u.username }}-domain-{{ loop.index }}">{{ domain }}</label>
+              </div>
+              {% endfor %}
+            </div>
+            <div class="check-item">
+              <input id="{{ u.username }}-all" type="checkbox" name="allow_all" value="true" {% if u.access_mode == 'all' %}checked{% endif %}>
+              <label for="{{ u.username }}-all">Full access to all domains</label>
+            </div>
+            <div><button class="btn btn-primary" type="submit">Save domain access</button></div>
+          </form>
+        </div>
+
+        <div class="col-4 stack">
+          <form method="post" action="/ftp/passwd" class="stack">
+            <input type="hidden" name="username" value="{{ u.username }}">
+            <div><label>Set new password</label><input type="password" name="password" autocomplete="new-password" required></div>
+            <button class="btn" type="submit">Change password</button>
+          </form>
+          <div class="toolbar">
+            <form method="post" action="/ftp/enable">
+              <input type="hidden" name="username" value="{{ u.username }}">
+              <input type="hidden" name="enabled" value="{% if u.enabled %}0{% else %}1{% endif %}">
+              <button class="btn" type="submit">{% if u.enabled %}Disable{% else %}Enable{% endif %}</button>
+            </form>
+            <form method="post" action="/ftp/del" onsubmit="return confirm('FTP user {{ u.username }} really delete?');">
+              <input type="hidden" name="username" value="{{ u.username }}">
+              <button class="btn btn-danger" type="submit">Delete</button>
+            </form>
+          </div>
+        </div>
+      </div>
+    </article>
+    {% endfor %}
+  </section>
 </div>
 
-<div class="card">
-  <h3>Delete user</h3>
-  <form method="post" action="/ftp/del">
-    <input name="username" placeholder="username" required>
-    <button class="btn" type="submit">Delete + Apply</button>
-  </form>
+<div class="notice warning" style="margin-top:16px;">
+  Applying FTP access recreates only the FTP container when its domain-view mounts change. Web files remain bind-mounted in <code>htdocs/</code>; no Docker volume is introduced.
 </div>
-
-<div class="card">
-  <h3>Enable/Disable user</h3>
-  <form method="post" action="/ftp/enable">
-    <input name="username" placeholder="username" required>
-    <select name="enabled">
-      <option value="1">Enable</option>
-      <option value="0">Disable</option>
-    </select>
-    <button class="btn" type="submit">Set + Apply</button>
-  </form>
-</div>
-
 {% endblock %}

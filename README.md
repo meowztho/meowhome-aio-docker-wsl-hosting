@@ -1,8 +1,10 @@
 # 🐱 MeowHome
 
-**All-in-One Docker-based Web Hosting Stack with FTP, SSL, and DNS Management**
+**All-in-One Docker-based Web Hosting Stack with FTP, SSL, DNS, backups, and a local control plane**
 
-A fully automated hosting setup for multiple domains with Apache, PHP, MariaDB, Let's Encrypt SSL certificates, a Cloudflare DNS updater, and FTP virtual users.
+Current release: **2.5.2**
+
+MeowHome is a lightweight multi-domain hosting stack for Linux/WSL2. Apache, PHP, MariaDB, FTPS, Let's Encrypt, DNS automation, and the Web UI run in Docker, while persistent website and service data stays directly in the project directory as WSL/Linux bind-mounted files rather than Docker named volumes.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Docker](https://img.shields.io/badge/Docker-Ready-blue.svg)](https://www.docker.com/)
@@ -14,6 +16,8 @@ A fully automated hosting setup for multiple domains with Apache, PHP, MariaDB, 
 ## 📋 Table of Contents
 
 - [Features](#-features)
+- [Web UI](#-web-ui-meowhome-ui)
+- [Backup & Restore](#backup--restore)
 - [Requirements](#-requirements)
 - [Quick Start](#-quick-start)
 - [Architecture](#%EF%B8%8F-architecture)
@@ -39,11 +43,11 @@ A fully automated hosting setup for multiple domains with Apache, PHP, MariaDB, 
 - **Let's Encrypt** wildcard certificates via Cloudflare DNS
 - **Automatic renewal** every 12 hours
 - **DNS updater** for dynamic IPs (Cloudflare)
-- **HSTS** and modern SSL configuration
+- **Reusable TLS configuration** for Apache virtual hosts
 
 ### 📁 FTP Server
 - **vsftpd** with virtual users (PAM-based)
-- **Per-domain isolation** or full access
+- **Per-user access scopes**: one domain, multiple selected domains, or all domains
 - **FTPS** support (TLS/SSL)
 - **Password management tool** (`meowftp.py`)
 - **SQLite user database** on the host
@@ -51,10 +55,11 @@ A fully automated hosting setup for multiple domains with Apache, PHP, MariaDB, 
 ### 🛠️ Management Tools
 - **meowftp.py**: convenient user management
 - **debug-ftp.sh**: comprehensive diagnostics
-- **fix-permissions.sh**: auto-repair for permissions
+- **fix-permissions.sh**: explicit permission-repair helper (never run automatically during upgrades)
 - **build-ftps-pem.sh**: SSL cert converter
 - **backup.sh**: Backup Tool
 - **restore.sh**: Restore Tool
+- **meowhome.py**: stable operational CLI (`doctor`, `status`, lifecycle, logs)
 
 ---
 ## 🔧 Web UI (MeowHome UI)
@@ -81,9 +86,14 @@ or from the same network / via VPN
 
 - **FTP Management (UI-backed)**
   - Create, delete, enable and disable FTP users
-  - Uses the existing meowftp.py tool internally
-  - Automatically applies changes after modifications
-  - Safe handling of container restarts (race-condition aware)
+  - Assign one domain, multiple selected domains, or explicit full access per user
+  - Uses structured state from the existing `meowftp.py`/SQLite core instead of parsing terminal text
+  - Automatically reconciles generated vsftpd auth state and isolated multi-domain views
+
+- **Setup / Network**
+  - Edit HTTP/HTTPS, phpMyAdmin and FTP published ports/bind addresses
+  - Configure passive FTP range, FTPS certificate domain, DNS/ACME and database settings
+  - `PUID/PGID` and the host project path remain protected runtime contracts instead of casual UI settings
 
 - **VHost Management**
   - Edit Apache VirtualHost files directly in the browser
@@ -110,7 +120,7 @@ or from the same network / via VPN
 Restoring a backup is done via a dedicated shell script to avoid accidental data loss and to ensure safe container shutdown.
 
 ---
-## Backup & Restore (New)
+## Backup & Restore
 ### Create a Backup (via UI or CLI)
 
 - **Via Web UI:**
@@ -120,17 +130,21 @@ http://127.0.0.1:9090/backup
 
 - **Via CLI:**
 ```bash
-~/meowhome/tools/backup/backup.sh
+cd ~/meowhome
+sudo ./tools/backup/backup.sh
 ```
 
 - **With webroot included:**
 ```bash
-~/meowhome/tools/backup/backup.sh --with-htdocs
+cd ~/meowhome
+sudo ./tools/backup/backup.sh --with-htdocs
 ```
+
+The installed tool derives the project root from its own location, so using `sudo` does not redirect backups to `/root/meowhome`. On older releases, set `MEOWHOME_PROJECT_DIR="$PWD"` explicitly when invoking a newer backup helper before the upgrade.
 - **Restore a Backup (CLI only)**
 ```bash
-~/meowhome/tools/backup/restore.sh \
-  ~/meowhome/backups/meowhome-backup-YYYYmmdd-HHMMSS.tar.gz
+cd /path/to/meowhome
+./tools/backup/restore.sh ./backups/meowhome-backup-YYYYmmdd-HHMMSS.tar.gz
 ```
 
 This will:
@@ -166,7 +180,7 @@ This will:
 ```bash
 # Clone repository (or download the script)
 git clone https://github.com/meowztho/meowhome-aio-docker-wsl-hosting.git
-cd meowhome
+cd meowhome-aio-docker-wsl-hosting
 
 # Run init script
 chmod +x init-meowhome.sh
@@ -231,10 +245,13 @@ docker compose logs -f
 # User for a specific domain
 ./tools/ftp/meowftp.py add webmaster example.com
 
-# User with full access
-./tools/ftp/meowftp.py add admin ""
+# Restrict the same user to a selected multi-domain view
+./tools/ftp/meowftp.py assign webmaster example.com example.net
 
-# Apply changes (requires sudo!)
+# Explicit full access to every domain
+./tools/ftp/meowftp.py add admin "" --allow-all
+
+# Apply generated auth/view state (requires sudo!)
 sudo ./tools/ftp/meowftp.py apply
 ```
 
@@ -269,8 +286,8 @@ Password: admin
 The guided setup flow allows you to:
 - **Configure the full .env file via the browser**
 - **Enable or disable Certbot and DNS updater**
-- **Configure domains, email, FTP, and database credentials**
-- **Apply changes safely without manual file editing**
+- **Configure domains, published ports, email, FTP/FTPS, DNS/ACME, and database credentials**
+- **Manage FTP domain assignments, VHosts, backups, services and logs from the same control plane**
 
 This approach is ideal if you:
 - **Prefer a graphical setup**
@@ -280,6 +297,20 @@ This approach is ideal if you:
 ---
 
 ## 🏗️ Architecture
+
+### Core-first contract
+
+MeowHome 2.5 treats `.env`, Compose service names, persistent-data boundaries, and `tools/meowhome.py` as the stable operational contract. `ftp/users.sqlite` is the source of truth for FTP identities; `ftp/data/` is generated and can be rebuilt. Existing `htdocs/` content and Apache VHost files are user-owned and are not replaced by installer upgrades.
+
+For diagnosis, prefer:
+
+```bash
+./tools/meowhome.py status --json
+./tools/meowhome.py doctor --json
+```
+
+See `ARCHITECTURE.md` for ownership, persistence, extension, and restore rules.
+
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -312,7 +343,7 @@ This approach is ideal if you:
     └───────────────────┘                   │
                                              │
     ┌────────────────────────────────────────▼────┐
-    │          Shared Volume: htdocs/              │
+    │       Shared WSL/Linux bind mount: htdocs/    │
     │  ├── example.com/                            │
     │  │   └── index.php                           │
     │  └── example.net/                            │
@@ -323,8 +354,9 @@ This approach is ideal if you:
 │               Background Services                            │
 ├──────────────────────────────────────────────────────────────┤
 │  Certbot (meowhome_certbot)    │ Let's Encrypt Certs        │
-│  DNS Updater (meowhome_dns)    │ Cloudflare A-Record Update │
-│  phpMyAdmin (127.0.0.1:8080)   │ DB Management (local only) │
+│  DNS Updater (meowhome_dns_updater) │ Cloudflare A-Record Update │
+│  phpMyAdmin (127.0.0.1:8080)        │ DB Management (local only) │
+│  Web UI (127.0.0.1:9090)            │ Local control plane         │
 └──────────────────────────────────────────────────────────────┘
 ```
 
@@ -339,6 +371,7 @@ This approach is ideal if you:
 | `meowhome_certbot` | certbot/certbot | - | SSL certificates |
 | `meowhome_dns_updater` | python:3.12-slim | - | DNS updates |
 | `meowhome_pma` | phpmyadmin:5 | 127.0.0.1:8080 | phpMyAdmin |
+| `meowhome_ui` | Custom (Python/FastAPI) | 127.0.0.1:9090 | Local control plane |
 
 ---
 
@@ -375,6 +408,7 @@ RETRY_INTERVAL_SECONDS=300
 LE_EMAIL=admin@example.com
 LE_ACCOUNT=
 CF_PROPAGATION_SECONDS=30
+CERTBOT_RETRY_SECONDS=300
 
 # Wildcard Mode (recommended)
 WILDCARD=true
@@ -386,7 +420,23 @@ WILDCARD=true
 # ============================================================
 # FTP / FTPS
 # ============================================================
-FTP_ENABLED=true
+# Host ownership used by PHP-FPM and FTP guest mapping
+PUID=1000
+PGID=1000
+
+# Installer/restore-managed absolute WSL path. Do not hand-edit.
+MEOWHOME_HOST_PROJECT_DIR=/home/your-user/meowhome
+
+# Published host bindings / ports
+HTTP_BIND=0.0.0.0
+HTTP_PORT=80
+HTTPS_BIND=0.0.0.0
+HTTPS_PORT=443
+PHPMYADMIN_BIND=127.0.0.1
+PHPMYADMIN_PORT=8080
+FTP_BIND=0.0.0.0
+FTP_PORT=21
+
 FTP_PASV_MIN=21000
 FTP_PASV_MAX=21010
 
@@ -396,10 +446,6 @@ FTP_PUBLIC_HOST=ftp.example.com
 # FTPS (after cert creation)
 FTP_TLS=NO
 FTP_CERT_DOMAIN=example.com
-
-# File permissions
-FTP_HOST_UID=1000
-FTP_HOST_GID=1000
 
 # ============================================================
 # Database
@@ -411,7 +457,7 @@ DB_USER=app
 DB_PASSWORD=secure_app_password
 
 # ============================================================
-# Optional: Certbot + DNS Updater toggles (v2.2.0)
+# Optional: Certbot + DNS Updater toggles
 # ============================================================
 
 # Enable/disable certbot container (container will idle when disabled)
@@ -427,6 +473,15 @@ ACME_CHALLENGE=dns
 
 # DNS provider for DNS-01 (currently implemented: cloudflare)
 DNS_PROVIDER=cloudflare
+
+# ============================================================
+# MeowHome Web UI
+# ============================================================
+# Keep localhost-only unless you intentionally expose it on LAN/VPN.
+MEOWHOME_UI_BIND=127.0.0.1
+MEOWHOME_UI_PORT=9090
+MEOWHOME_UI_USER=admin
+MEOWHOME_UI_PASS=change-me
 ```
 
 ### Apache VHosts
@@ -445,6 +500,7 @@ Create VHost files in `apache/vhosts/`:
         Require all granted
     </Directory>
 
+    Include /etc/apache2/snippets/php-fpm.conf
     Include /etc/apache2/snippets/cf-safe-redirect.conf
 </VirtualHost>
 
@@ -501,8 +557,14 @@ The tool manages FTP virtual users in a SQLite database and synchronizes them wi
 # Add user (domain-specific)
 ./tools/ftp/meowftp.py add webmaster example.com
 
-# Add user (full access to all domains)
-./tools/ftp/meowftp.py add admin ""
+# Assign selected domains to an existing user
+./tools/ftp/meowftp.py assign webmaster example.com example.net
+
+# Give an existing user explicit full access
+./tools/ftp/meowftp.py all webmaster
+
+# Add user with full access to all domains
+./tools/ftp/meowftp.py add admin "" --allow-all
 
 # Delete user
 ./tools/ftp/meowftp.py del username
@@ -516,7 +578,7 @@ The tool manages FTP virtual users in a SQLite database and synchronizes them wi
 # Change password
 ./tools/ftp/meowftp.py passwd username
 
-# Change home directory
+# Legacy/single-path home mode remains available
 ./tools/ftp/meowftp.py home username example.net
 
 # Apply changes (IMPORTANT!)
@@ -530,17 +592,19 @@ sudo ./tools/ftp/meowftp.py apply
 ./tools/ftp/meowftp.py add alice example.com
 # Enter password: ********
 
-# 2. Create admin with full access
-./tools/ftp/meowftp.py add admin ""
-# WARNING appears, confirm with "yes"
+# 2. Expand alice to an isolated two-domain view
+./tools/ftp/meowftp.py assign alice example.com example.net
 
-# 3. Apply changes
+# 3. Create admin with explicit full access
+./tools/ftp/meowftp.py add admin "" --allow-all
+
+# 4. Apply changes
 sudo ./tools/ftp/meowftp.py apply
 
-# 4. Check status
+# 5. Check status
 ./tools/ftp/meowftp.py list
-# alice                enabled=✓ path=htdocs/example.com
-# admin                enabled=✓ path=htdocs/(all domains)
+# alice ... mode=domains access=example.com, example.net
+# admin ... mode=all     access=all domains
 ```
 
 ### FTP Directory Structure
@@ -703,30 +767,29 @@ docker logs -f meowhome_certbot
 
 ### Permission denied on FTP upload
 
-**v2.2.0 note (UID/GID mismatch fix):**
-MeowHome maps the FTP guest user to the host UID/GID to prevent write permission issues on bind mounts.
+MeowHome maps the FTP guest user to the canonical host UID/GID to prevent write-permission issues on bind mounts.
 - PHP-FPM runs as the host user (`PUID:PGID`)
 - FTP guest user is mapped to the host UID/GID
 - Apache runs as root (required for `/var/run/apache2` and ports 80/443)
 
 ```bash
-# 1. Use fix permissions tool
-./tools/ftp/fix-permissions.sh
+# 1. Diagnose first; do not recursively chown as a first reaction
+./tools/meowhome.py doctor
 
-# 2. Check manually
-docker exec meowhome_ftp ls -la /var/www/example.com
-
-# Should be: drwxrwxr-x ftp ftp
-
-# 3. Check UID/GID in .env
-cat .env | grep FTP_HOST
-# FTP_HOST_UID=1000
-# FTP_HOST_GID=1000
-
-# 4. Find host UID
+# 2. Check the canonical host IDs
+grep -E '^(PUID|PGID)=' .env
 id -u
 id -g
+
+# 3. Inspect numeric ownership on host and in FTP
+stat -c '%u:%g %a %n' htdocs htdocs/example.com
+docker exec meowhome_ftp sh -lc 'id ftp; ls -ldn /var/www /var/www/example.com'
+
+# 4. Only if doctor/inspection confirms ownership drift, normalize explicitly
+./tools/ftp/fix-permissions.sh
 ```
+
+On the WSL host, files normally appear owned by the configured numeric `PUID:PGID` (for example your regular Linux user), even though the matching account inside the FTP container is named `ftp`.
 
 ### DNS updater not working
 
@@ -752,6 +815,11 @@ docker compose ps
 docker compose logs web
 docker compose logs php
 docker compose logs ftp
+
+# FTPS compatibility
+# MeowHome keeps encrypted logins/data mandatory but disables vsftpd TLS-session
+# reuse (`require_ssl_reuse=NO`) so common clients such as Windows curl can open
+# the protected data channel without a 522 error.
 
 # Rebuild containers
 docker compose build --no-cache
@@ -870,22 +938,19 @@ Result: containers may bind to paths that exist but are not yet fully initialize
 
 ### Backup
 
+Use the canonical backup tool so MariaDB is dumped logically and FTP/configuration state is captured consistently:
+
 ```bash
-# Database backup
-docker exec meowhome_db mysqldump -u root -p$DB_ROOT_PASSWORD --all-databases > backup.sql
+cd ~/meowhome
 
-# Webroot backup
-tar -czf htdocs-backup.tar.gz htdocs/
+# Configuration + MariaDB + FTP/cert/runtime configuration
+sudo ./tools/backup/backup.sh
 
-# FTP user DB backup
-cp ftp/users.sqlite ftp-users-backup.sqlite
-
-# Complete backup
-tar -czf meowhome-backup-$(date +%Y%m%d).tar.gz \
-  --exclude='db/*' \
-  --exclude='state/*' \
-  ~/meowhome/
+# Full upgrade/disaster-recovery backup including website files
+sudo ./tools/backup/backup.sh --with-htdocs
 ```
+
+Backups are written to `~/meowhome/backups/` by default with owner-only permissions. Raw `db/` files and generated `ftp/data/` state are intentionally not treated as portable sources of truth.
 
 ### Monitoring
 
@@ -896,11 +961,12 @@ docker stats
 # Disk usage
 docker system df
 
-# Rotate logs (if too large)
+# Save a recent log snapshot
 docker compose logs --tail=100 > logs.txt
-docker compose down
-docker system prune -a
-docker compose up -d
+
+# Core diagnostics
+./tools/meowhome.py status
+./tools/meowhome.py doctor
 ```
 
 ---
@@ -909,6 +975,9 @@ docker compose up -d
 
 ```
 meowhome/
+├── AGENTS.md                 # Agent/operator rules
+├── ARCHITECTURE.md           # Core-first ownership + persistence contract
+├── VERSION                   # Installed release version
 ├── apache/
 │   ├── vhosts/              # Apache VirtualHost Configs
 │   │   ├── 10-example.conf
@@ -928,14 +997,14 @@ meowhome/
 │   ├── Dockerfile
 │   ├── entrypoint.sh
 │   ├── build-ftps-pem.sh   # FTPS cert builder
-│   ├── data/                # FTP config (volume)
-│   │   ├── users.d/         # Per-user configs
+│   ├── data/                # Generated FTP auth/config state; rebuilt from users.sqlite
+│   │   ├── users.d/         # Per-user configs (generated)
 │   │   ├── users.db         # Berkeley DB (generated)
-│   │   └── users.txt        # Plaintext user list (temp)
+│   │   └── users.txt        # Hash input (generated)
 │   ├── ssl/                 # FTPS certificates
 │   │   └── vsftpd.pem
 │   └── users.sqlite         # User database (host)
-├── htdocs/                  # Web root (volume)
+├── htdocs/                  # Web root (direct host/WSL bind mount)
 │   ├── example.com/
 │   │   └── index.php
 │   └── example.net/
@@ -946,13 +1015,15 @@ meowhome/
 ├── web/
 │   └── Dockerfile           # Apache image
 ├── tools/
+│   ├── meowhome.py          # Stable operational CLI / diagnostics
+│   ├── backup/              # Backup + restore contract
 │   ├── ftp/
 │   │   ├── meowftp.py      # FTP user management
 │   │   ├── debug-ftp.sh    # Diagnostic tool
 │   │   └── fix-permissions.sh
 │   └── apache/
-├── db/                      # MariaDB data (volume, gitignored)
-├── letsencrypt/            # Let's Encrypt certs (volume)
+├── db/                      # MariaDB data (direct host/WSL bind mount, gitignored)
+├── letsencrypt/            # Let's Encrypt certs (direct host/WSL bind mount)
 ├── state/                   # Runtime state (gitignored)
 ├── legacy/                  # Old scripts
 ├── docker-compose.yml
@@ -966,26 +1037,26 @@ meowhome/
 ## 🔄 Update / Upgrade
 
 ```bash
+# 1. Back up the installed runtime (including web content)
 cd ~/meowhome
+sudo ./tools/backup/backup.sh --with-htdocs
 
-# 1. Create a backup
-docker compose down
-tar -czf backup-$(date +%Y%m%d).tar.gz \
-  .env htdocs/ ftp/users.sqlite apache/vhosts/
+# 2. Update the complete source checkout. The installer depends on assets/,
+#    meowhome-ui/, and the contract documents next to init-meowhome.sh.
+cd ~/meowhome-aio-docker-wsl-hosting
+git pull --ff-only
 
-# 2. Fetch the latest init script
-wget https://raw.githubusercontent.com/yourusername/meowhome/main/init-meowhome.sh
-chmod +x init-meowhome.sh
-
-# 3. Run update (overwrites only system files, not your data)
+# 3. Overlay system/runtime files. Existing .env, htdocs and VHosts are preserved.
 ./init-meowhome.sh ~/meowhome
 
-# 4. Rebuild containers
-docker compose build --no-cache
+# 4. Reconcile the stack with the updated images/configuration.
+cd ~/meowhome
+docker compose build --pull
 docker compose up -d
 
-# 5. Re-apply FTP users
+# 5. Rebuild generated FTP auth state from ftp/users.sqlite and verify.
 sudo ./tools/ftp/meowftp.py apply
+./tools/meowhome.py doctor --json
 ```
 
 ## 🕹️ USEFUL COMMANDS
@@ -1002,7 +1073,8 @@ docker logs -f meowhome_ftp
 👥 Manage FTP users:  
 ./tools/ftp/meowftp.py list  
 ./tools/ftp/meowftp.py passwd <user>  
-./tools/ftp/meowftp.py home <user> <path>
+./tools/ftp/meowftp.py assign <user> <domain> [domain ...]
+./tools/ftp/meowftp.py all <user>
 
 🗄️ phpMyAdmin (local only):  
 http://127.0.0.1:8080
@@ -1017,9 +1089,14 @@ docker compose restart ftp
 
 💾 Backup & Restore
 
-./tools/backup/backup.sh (without htdocs)
+./tools/backup/backup.sh                 # without htdocs
 ./tools/backup/backup.sh --with-htdocs
-~/meowhome/tools/backup/restore.sh ~/meowhome/backups/meowhome-backup-YYYYmmdd-HHMMSS.tar.gz
+./tools/backup/restore.sh ./backups/meowhome-backup-YYYYmmdd-HHMMSS.tar.gz
+
+🩺 Core diagnostics
+
+./tools/meowhome.py status --json
+./tools/meowhome.py doctor --json
 
 ```
 
@@ -1039,8 +1116,8 @@ Contributions are welcome! Please:
 
 ```bash
 # Clone repository
-git clone https://github.com/yourusername/meowhome.git
-cd meowhome
+git clone https://github.com/meowztho/meowhome-aio-docker-wsl-hosting.git
+cd meowhome-aio-docker-wsl-hosting
 
 # Create your own .env
 cp .env.example .env
@@ -1054,14 +1131,9 @@ docker compose up --build
 
 ## 📝 Changelog
 
-### Version 2.0 (2024-02)
-- ✅ **FIX**: FTP Virtual Users Authentication (PAM crypt=crypt)
-- ✅ **NEW**: Robust `meowftp.py` with container readiness
-- ✅ **NEW**: Comprehensive debug tools
-- ✅ **IMPROVED**: Documentation and error handling
+The authoritative release history is maintained in [`CHANGELOG.md`](CHANGELOG.md).
 
-### Version 1.0 (2024-01)
-- Initial release
+Current release: **2.5.2** — includes the Core-First runtime contract, the modernized Web UI/control plane, multi-domain FTP access, safer upgrade/backup behavior, FTPS client compatibility, and the Backup-page layout hotfix.
 
 ---
 
@@ -1097,7 +1169,7 @@ Then use different proxy targets in Apache VHosts.
 <details>
 <summary><strong>Does MeowHome work with DNS providers other than Cloudflare?</strong></summary>
 
-Certbot supports many providers. Adjust `certbot/Dockerfile`, for example:
+Not out of the box. MeowHome's current DNS updater and DNS-01 integration are implemented for Cloudflare. Certbot itself supports other providers, but using one requires extending the image/configuration deliberately, for example:
 ```dockerfile
 RUN pip install certbot-dns-route53  # Example AWS
 ```

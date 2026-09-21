@@ -1,10 +1,5 @@
 {% extends "base.html" %}
 {% block content %}
-<h2>Logs: {{ name }}</h2>
-<form method="get" action="/container/{{ name }}/logs">
-  <label>Lines:</label>
-  <input type="number" name="lines" value="{{ lines }}" min="10" max="5000">
-  <button class="btn" type="submit">Refresh</button>
-</form>
-<pre>{{ logtext }}</pre>
+<div class="page-header split"><div><div class="eyebrow">Runtime logs</div><h1>{{ name }}</h1></div><a class="btn" href="/health">Health</a></div>
+<div class="card"><form method="get" action="/container/{{ name }}/logs" class="toolbar"><div class="field" style="max-width:160px"><label>Zeilen</label><input type="number" name="lines" value="{{ lines }}" min="10" max="5000"></div><button class="btn btn-primary" type="submit">Aktualisieren</button></form><pre style="margin-top:14px;max-height:70vh">{{ logtext }}</pre></div>
 {% endblock %}

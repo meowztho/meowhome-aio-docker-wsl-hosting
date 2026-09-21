@@ -1,32 +1,8 @@
 {% extends "base.html" %}
 {% block content %}
-<h2>Apache VHosts</h2>
-
-<div class="card">
-  <h3>VHost files</h3>
-  {% if files and files|length > 0 %}
-    <ul>
-      {% for f in files %}
-      <li>
-        <a href="/vhosts/edit?file={{ f }}">{{ f }}</a>
-        <form method="post" action="/vhosts/delete" style="display:inline; margin-left:8px;" onsubmit="return confirm('VHost-Datei wirklich loeschen?');">
-          <input type="hidden" name="file" value="{{ f }}">
-          <button class="btn" type="submit">Delete</button>
-        </form>
-      </li>
-      {% endfor %}
-    </ul>
-  {% else %}
-    <p class="muted">Keine .conf Dateien gefunden in apache/vhosts/</p>
-  {% endif %}
+<div class="page-header split"><div><div class="eyebrow">Apache</div><h1>Virtual Hosts</h1><p class="muted">Direkte Konfiguration der bind-mounted Apache-VHosts.</p></div></div>
+<div class="grid">
+<section class="card col-8"><div class="card-title">VHost-Dateien</div>{% if files %}<div class="stack" style="margin-top:14px;">{% for f in files %}<div class="split" style="padding:10px 0;border-bottom:1px solid var(--border);"><a href="/vhosts/edit?file={{ f }}"><strong>{{ f }}</strong></a><div class="toolbar"><a class="btn btn-sm" href="/vhosts/edit?file={{ f }}">Bearbeiten</a><form method="post" action="/vhosts/delete" onsubmit="return confirm('VHost-Datei wirklich loeschen?');"><input type="hidden" name="file" value="{{ f }}"><button class="btn btn-sm btn-danger" type="submit">Löschen</button></form></div></div>{% endfor %}</div>{% else %}<p class="muted">Keine .conf-Dateien vorhanden.</p>{% endif %}</section>
+<section class="card col-4"><div class="card-title">Neue Datei</div><form method="get" action="/vhosts/edit" class="stack" style="margin-top:14px;"><div class="field"><label>Dateiname</label><input name="file" placeholder="example.com.conf" required></div><button class="btn btn-primary" type="submit">Erstellen</button></form><div class="notice" style="margin-top:14px;">Beim Speichern prüft MeowHome <code>apachectl -t</code> und rollt bei Fehlern zurück.</div></section>
 </div>
-
-<div class="card">
-  <h3>New file</h3>
-  <form method="get" action="/vhosts/edit">
-    <input name="file" placeholder="example.com.conf" required>
-    <button class="btn" type="submit">Create/Edit</button>
-  </form>
-</div>
-
 {% endblock %}

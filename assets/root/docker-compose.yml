@@ -4,15 +4,16 @@ services:
       context: ./web
       dockerfile: Dockerfile
     container_name: meowhome_apache
-    env_file: ./.env
+    environment:
+      WIN_HOST_IP: ${WIN_HOST_IP:-127.0.0.1}
     ports:
-      - "80:80"
-      - "443:443"
+      - "${HTTP_BIND:-0.0.0.0}:${HTTP_PORT:-80}:80"
+      - "${HTTPS_BIND:-0.0.0.0}:${HTTPS_PORT:-443}:443"
     volumes:
-      - ./htdocs:/var/www:rw
-      - ./apache/vhosts:/etc/apache2/sites-enabled:rw
-      - ./apache/snippets:/etc/apache2/snippets:ro
-      - ./letsencrypt:/etc/letsencrypt:ro
+      - "${MEOWHOME_HOST_PROJECT_DIR:-.}/htdocs:/var/www:rw"
+      - "${MEOWHOME_HOST_PROJECT_DIR:-.}/apache/vhosts:/etc/apache2/sites-enabled:rw"
+      - "${MEOWHOME_HOST_PROJECT_DIR:-.}/apache/snippets:/etc/apache2/snippets:ro"
+      - "${MEOWHOME_HOST_PROJECT_DIR:-.}/letsencrypt:/etc/letsencrypt:ro"
     depends_on:
       - php
     restart: unless-stopped
@@ -24,8 +25,8 @@ services:
     container_name: meowhome_php
     user: "${PUID}:${PGID}"
     volumes:
-      - ./htdocs:/var/www:rw
-      - ./php/custom.ini:/usr/local/etc/php/conf.d/99-custom.ini:ro
+      - "${MEOWHOME_HOST_PROJECT_DIR:-.}/htdocs:/var/www:rw"
+      - "${MEOWHOME_HOST_PROJECT_DIR:-.}/php/custom.ini:/usr/local/etc/php/conf.d/99-custom.ini:ro"
     restart: unless-stopped
 
   mariadb:
@@ -38,7 +39,7 @@ services:
       MYSQL_USER: ${DB_USER}
       MYSQL_PASSWORD: ${DB_PASSWORD}
     volumes:
-      - ./db:/var/lib/mysql
+      - "${MEOWHOME_HOST_PROJECT_DIR:-.}/db:/var/lib/mysql"
     restart: unless-stopped
 
   phpmyadmin:
@@ -50,7 +51,7 @@ services:
       PMA_USER: root
       PMA_PASSWORD: ${DB_ROOT_PASSWORD}
     ports:
-      - "127.0.0.1:8080:80"
+      - "${PHPMYADMIN_BIND:-127.0.0.1}:${PHPMYADMIN_PORT:-8080}:80"
     depends_on:
       - mariadb
     restart: unless-stopped
@@ -62,9 +63,9 @@ services:
     container_name: meowhome_certbot
     env_file: ./.env
     volumes:
-      - ./letsencrypt:/etc/letsencrypt
-      - ./state:/state
-      - ./htdocs:/var/www:rw
+      - "${MEOWHOME_HOST_PROJECT_DIR:-.}/letsencrypt:/etc/letsencrypt"
+      - "${MEOWHOME_HOST_PROJECT_DIR:-.}/state:/state"
+      - "${MEOWHOME_HOST_PROJECT_DIR:-.}/htdocs:/var/www:rw"
       - /var/run/docker.sock:/var/run/docker.sock
     restart: unless-stopped
 
@@ -75,7 +76,7 @@ services:
     container_name: meowhome_dns_updater
     env_file: ./.env
     volumes:
-      - ./state:/state
+      - "${MEOWHOME_HOST_PROJECT_DIR:-.}/state:/state"
     restart: unless-stopped
 
   ftp:
@@ -85,12 +86,12 @@ services:
     container_name: meowhome_ftp
     env_file: ./.env
     volumes:
-      - ./htdocs:/var/www:rw
-      - ./ftp/data:/etc/vsftpd:rw
-      - ./ftp/ssl:/etc/ssl/private:ro
+      - "${MEOWHOME_HOST_PROJECT_DIR:-.}/htdocs:/var/www:rw"
+      - "${MEOWHOME_HOST_PROJECT_DIR:-.}/ftp/data:/etc/vsftpd:rw"
+      - "${MEOWHOME_HOST_PROJECT_DIR:-.}/ftp/ssl:/etc/ssl/private:ro"
     ports:
-      - "21:21"
-      - "${FTP_PASV_MIN}-${FTP_PASV_MAX}:${FTP_PASV_MIN}-${FTP_PASV_MAX}"
+      - "${FTP_BIND:-0.0.0.0}:${FTP_PORT:-21}:21"
+      - "${FTP_BIND:-0.0.0.0}:${FTP_PASV_MIN}-${FTP_PASV_MAX}:${FTP_PASV_MIN}-${FTP_PASV_MAX}"
     restart: unless-stopped
 
 #__MEOWHOME_UI_SERVICE__

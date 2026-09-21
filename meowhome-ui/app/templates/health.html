@@ -1,46 +1,11 @@
-﻿{% extends "base.html" %}
+{% extends "base.html" %}
 {% block content %}
-  <h2>Health Check</h2>
-
-  <h3>Docker</h3>
-  <p>Status: <strong>{{ "OK" if docker_ok else "ERROR" }}</strong></p>
-  {% if not docker_ok %}
-    <pre>{{ docker_msg }}</pre>
-  {% endif %}
-
-  <h3>Container</h3>
-  <table border="1" cellpadding="6" cellspacing="0">
-    <thead>
-      <tr>
-        <th>Name</th>
-        <th>Status</th>
-        <th>Health</th>
-        <th>RestartCount</th>
-        <th>Image</th>
-        <th>Actions</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for c in containers %}
-      <tr>
-        <td>{{ c.name }}</td>
-        <td>{{ c.status }}</td>
-        <td>{{ c.health }}</td>
-        <td>{{ c.restart_count }}</td>
-        <td>{{ c.image }}</td>
-        <td>
-          <form action="/container/{{ c.name }}/action" method="post" style="display:inline;">
-            <input type="hidden" name="action" value="restart">
-            <button type="submit">Restart</button>
-          </form>
-          <a href="/container/{{ c.name }}/logs?lines=200">Logs</a>
-        </td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
-
-  <p style="margin-top:16px;">
-    Tipp: Wenn etwas "restarting" ist, zuerst Logs anschauen.
-  </p>
+<div class="page-header split"><div><div class="eyebrow">Diagnostics</div><h1>Health Check</h1><p class="muted">Laufzeitstatus der acht MeowHome-Services.</p></div><span class="badge {{ 'ok' if docker_ok else 'error' }}">Docker {{ 'OK' if docker_ok else 'ERROR' }}</span></div>
+{% if not docker_ok %}<div class="notice danger"><strong>Docker nicht erreichbar.</strong><pre>{{ docker_msg }}</pre></div>{% endif %}
+<div class="card">
+<table><thead><tr><th>Service</th><th>Status</th><th>Health</th><th>Restarts</th><th>Image</th><th></th></tr></thead><tbody>
+{% for c in containers %}<tr><td><strong>{{ c.name }}</strong></td><td><span class="badge {{ 'ok' if c.status == 'running' else 'warning' }}">{{ c.status }}</span></td><td>{{ c.health or '—' }}</td><td>{{ c.restart_count }}</td><td class="muted">{{ c.image or 'lokal' }}</td><td><div class="toolbar"><form action="/container/{{ c.name }}/action" method="post"><button class="btn btn-sm" name="action" value="restart">Restart</button></form><a class="btn btn-sm btn-ghost" href="/container/{{ c.name }}/logs?lines=200">Logs</a></div></td></tr>{% endfor %}
+</tbody></table>
+</div>
+<div class="notice" style="margin-top:16px;">Bei <code>restarting</code> oder <code>exited</code> zuerst die Logs ansehen. Für Konfigurationsdrift zusätzlich auf dem Host <code>./tools/meowhome.py doctor</code> ausführen.</div>
 {% endblock %}

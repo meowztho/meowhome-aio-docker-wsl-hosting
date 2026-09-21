@@ -295,29 +295,53 @@ def update_a_record(zone_id: str, record_id: str, fqdn: str, new_ip: str) -> boo
         return False
 
 def get_spf_record(zone_id: str, name: str) -> Tuple[Optional[str], Optional[str]]:
-    return find_dns_record(zone_id, name, rtype="TXT")
+    try:
+        r = SESSION.get(
+            f"{CLOUDFLARE_API_URL}/zones/{zone_id}/dns_records",
+            params={"type": "TXT", "name": name},
+            timeout=15,
+        )
+        r.raise_for_status()
+        data = r.json()
+        for rec in data.get("result") or []:
+            content = str(rec.get("content") or "").strip()
+            unquoted = content[1:-1] if len(content) >= 2 and content[0] == content[-1] == '"' else content
+            if unquoted.lower().startswith("v=spf1"):
+                return rec.get("id"), content
+    except Exception as e:
+        logging.error(f"SPF Record Lookup {name} fehlgeschlagen: {e}")
+    return None, None
 
-def merge_spf(current: str, ip: str) -> str:
-    base = current or ""
-    if not base.startswith("v=spf1"):
-        return f"v=spf1 a mx ip4:{ip} ~all"
+def merge_spf(current: str, ip: str, previous_ip: Optional[str] = None) -> str:
+    base = (current or "").strip()
+    quoted = len(base) >= 2 and base[0] == base[-1] == '"'
+    if quoted:
+        base = base[1:-1]
+    if not base.lower().startswith("v=spf1"):
+        merged = f"v=spf1 a mx ip4:{ip} ~all"
+        return f'"{merged}"' if quoted else merged
+
     tokens = base.split()
+    if previous_ip and previous_ip != ip:
+        previous = f"ip4:{previous_ip}"
+        tokens = [t for t in tokens if t != previous]
     needle = f"ip4:{ip}"
     if needle not in tokens:
-        all_idx = next((i for i, t in enumerate(tokens) if t.endswith("all")), None)
+        all_idx = next((i for i, t in enumerate(tokens) if t.lower().endswith("all")), None)
         insert_pos = all_idx if all_idx is not None else len(tokens)
         tokens.insert(insert_pos, needle)
-    return " ".join(tokens)
+    merged = " ".join(tokens)
+    return f'"{merged}"' if quoted else merged
 
-def update_spf(zone_id: str, root_name: str, public_ip: str) -> None:
+def update_spf(zone_id: str, root_name: str, public_ip: str, previous_ip: Optional[str] = None) -> bool:
     rec_id, content = get_spf_record(zone_id, root_name)
     if not rec_id:
         logging.info(f"Kein SPF-TXT fuer {root_name} gefunden – wird nicht automatisch angelegt.")
-        return
-    new_spf = merge_spf(content or "", public_ip)
+        return True
+    new_spf = merge_spf(content or "", public_ip, previous_ip=previous_ip)
     if new_spf == (content or ""):
         logging.info(f"SPF bereits aktuell fuer {root_name}.")
-        return
+        return True
     payload = {"type": "TXT", "name": root_name, "content": new_spf, "ttl": 300}
     try:
         r = SESSION.put(
@@ -325,12 +349,15 @@ def update_spf(zone_id: str, root_name: str, public_ip: str) -> None:
             data=json.dumps(payload),
             timeout=20
         )
-        if r.status_code < 300 and r.json().get("success", False):
+        ok = r.status_code < 300 and r.json().get("success", False)
+        if ok:
             logging.info(f"SPF aktualisiert fuer {root_name}: {new_spf}")
         else:
             logging.error(f"SPF Update fehlgeschlagen fuer {root_name}: {r.text}")
+        return ok
     except Exception as e:
         logging.error(f"SPF Update Exception fuer {root_name}: {e}")
+        return False
 
 # ======================================================
 # Zeitsteuerung
@@ -378,6 +405,8 @@ def main():
         logging.info(f"Aktuelle oeffentliche IPv4: {public_ip} | geaendert={ip_changed} | force={force_now}")
 
         if ip_changed or force_now:
+            all_success = True
+            previous_ip = last_known_ip
             for entry in DOMAINS:
                 zone_name = entry["zone"]
                 a_records = entry.get("a_records", [])
@@ -387,31 +416,37 @@ def main():
                 zone_id = get_zone_id(zone_name)
                 if not zone_id:
                     logging.error(f"Zone-ID nicht gefunden fuer {zone_name}")
+                    all_success = False
                     continue
 
-                # A-Records
                 for fqdn in a_records:
                     rec_id, current_ip = find_dns_record(zone_id, fqdn, rtype="A")
                     if not rec_id:
                         logging.error(f"A-Record nicht gefunden: {fqdn}")
+                        all_success = False
                         continue
                     if current_ip == public_ip and not force_now:
                         logging.info(f"Keine Aenderung: {fqdn} bleibt {public_ip}")
                     else:
                         logging.info(f"Aktualisiere {fqdn}: {current_ip} → {public_ip}")
-                        update_a_record(zone_id, rec_id, fqdn, public_ip)
+                        if not update_a_record(zone_id, rec_id, fqdn, public_ip):
+                            all_success = False
 
-                # SPF-Update nur am Zonen-Root
-                if spf_update:
-                    update_spf(zone_id, zone_name, public_ip)
+                if spf_update and not update_spf(zone_id, zone_name, public_ip, previous_ip=previous_ip):
+                    all_success = False
 
-            # State aktualisieren
-            last_known_ip = public_ip
-            state["last_known_ip"] = last_known_ip
-            if force_now:
-                state["last_force_date"] = date.today().isoformat()
-                last_force_date = state["last_force_date"]
-            save_state(state)
+            # Only advance state when every requested mutation succeeded. Otherwise
+            # the next cycle must retry the failed records instead of assuming the
+            # new address is already fully committed.
+            if all_success:
+                last_known_ip = public_ip
+                state["last_known_ip"] = last_known_ip
+                if force_now:
+                    state["last_force_date"] = date.today().isoformat()
+                    last_force_date = state["last_force_date"]
+                save_state(state)
+            else:
+                logging.warning("Mindestens ein DNS-Update ist fehlgeschlagen; State wird nicht fortgeschrieben.")
 
         # Sleep bis naechstes Ereignis
         now = datetime.now()

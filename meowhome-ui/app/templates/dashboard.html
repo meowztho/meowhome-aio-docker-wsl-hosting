@@ -1,172 +1,85 @@
-﻿{% extends "base.html" %}
+{% extends "base.html" %}
 {% block content %}
+<div class="page-header split">
+  <div>
+    <div class="eyebrow">Control Plane</div>
+    <h1>Dashboard</h1>
+    <p class="muted">{{ project_dir }} · Docker {{ "erreichbar" if docker_ok else "nicht erreichbar" }}</p>
+  </div>
+  <div class="toolbar">
+    <a class="btn btn-primary" href="/setup">Konfiguration</a>
+    <a class="btn" href="/health">Health Check</a>
+  </div>
+</div>
 
-<style>
-  /* Setup-Hilfe: gut sichtbar direkt unter Navigation */
-  .setup-help-card {
-    margin: 12px 0 24px 0;
-    border: 2px solid #631414;
-    background: rgba(139, 30, 30, 0.18);
-  }
+{% set running = containers | selectattr('status', 'equalto', 'running') | list | length %}
+<div class="grid">
+  <div class="card col-4"><div class="muted">Services</div><div class="kpi">{{ containers|length }}</div><div class="muted">MeowHome Container erkannt</div></div>
+  <div class="card col-4"><div class="muted">Running</div><div class="kpi">{{ running }}</div><div class="muted">von {{ containers|length }} Services</div></div>
+  <div class="card col-4"><div class="muted">Docker</div><div class="kpi {{ 'ok' if docker_ok else 'error' }}">{{ 'OK' if docker_ok else 'ERROR' }}</div><div class="muted">Engine-Verbindung</div></div>
+</div>
 
-  .setup-help {
-    margin: 0;
-  }
+<div class="grid">
+  <section class="card col-8">
+    <div class="card-header split">
+      <div><div class="eyebrow">Runtime</div><div class="card-title">Services</div></div>
+      <a class="btn btn-sm" href="/health">Details</a>
+    </div>
+    <div class="stack">
+      {% for c in containers %}
+      <div class="split" style="padding:10px 0;border-bottom:1px solid var(--border);">
+        <div>
+          <strong>{{ c.name }}</strong>
+          <div class="muted">{{ c.image or 'lokales Image' }}</div>
+        </div>
+        <div class="toolbar">
+          <span class="badge {{ 'ok' if c.status == 'running' else 'warning' }}">{{ c.status }}</span>
+          {% if c.name != 'meowhome_ui' %}
+          <form method="post" action="/container/{{ c.name }}/action" class="toolbar">
+            {% if c.status == 'running' %}
+            <button class="btn btn-sm" name="action" value="restart">Restart</button>
+            <button class="btn btn-sm btn-ghost" name="action" value="stop">Stop</button>
+            {% else %}
+            <button class="btn btn-sm btn-primary" name="action" value="start">Start</button>
+            {% endif %}
+          </form>
+          {% else %}<span class="badge">host-controlled</span>{% endif %}
+          <a class="btn btn-sm btn-ghost" href="/container/{{ c.name }}/logs?lines=200">Logs</a>
+        </div>
+      </div>
+      {% else %}
+      <div class="notice warning">Keine MeowHome-Container gefunden. Nach einer frischen Installation zuerst Compose starten.</div>
+      {% endfor %}
+    </div>
+  </section>
 
-  .setup-help summary {
-    list-style: none;
-    cursor: pointer;
-    display: block;
-    width: 100%;
-    text-align: center;
-    padding: 12px 14px;
-    border-radius: 10px;
-    background: #c62828;
-    color: #ffffff;
-    font-weight: 700;
-    user-select: none;
-  }
+  <aside class="card col-4">
+    <div class="eyebrow">Quick actions</div>
+    <div class="card-title">Stack</div>
+    <form method="post" action="/compose/action" class="stack" style="margin-top:14px;">
+      <button class="btn btn-primary" name="action" value="up">Start / reconcile</button>
+      <button class="btn" name="action" value="build">Images bauen</button>
+      <button class="btn" name="action" value="pull">Images aktualisieren</button>
+      <button class="btn btn-ghost" name="action" value="recreate">Runtime neu erstellen (UI ausgenommen)</button>
+    </form>
+    <hr>
+    <div class="card-title">Automatisierung</div>
+    <div class="stack" style="margin-top:12px;">
+      <form method="post" action="/certbot/renew"><button class="btn" style="width:100%">Zertifikate erneuern</button></form>
+      <form method="post" action="/dns/run"><button class="btn" style="width:100%">DNS-Updater jetzt ausführen</button></form>
+    </div>
+  </aside>
+</div>
 
-  .setup-help summary::-webkit-details-marker {
-    display: none;
-  }
-
-  .setup-help summary:hover {
-    background: #6b0e0e;
-  }
-
-  .setup-help[open] summary {
-    background: #7f1010;
-  }
-
-.setup-help pre {
-  margin-top: 12px;
-  background: var(--pre-bg);
-  color: var(--pre-text);
-  border: 1px solid #8b1e1e;
-  padding: 14px;
-  border-radius: 10px;
-  overflow: auto;
-  max-height: 420px;
-
-  font-family: monospace;
-  font-size: 13px;
-  line-height: 1.4;
-}
-
-</style>
-
-<h2>MeowHome Dashboard</h2>
-<p class="muted">Project: {{ project_dir }}</p>
-
-<!-- ===================== -->
-<!-- Setup-Hilfe – ausklappbar, OBEN direkt unter Navigation -->
-<!-- ===================== -->
-<div class="card setup-help-card">
-  <details class="setup-help">
-    <summary>
-      Setup-Hilfe anzeigen / ausblenden
-    </summary>
-
-    <pre>
-WebUI Setup 127.0.0.1:9090 (admin/admin) bitte sofort nach Start aendern!
-env kann auch nach build angepasst werden.
-
-1) KONFIGURATION
-   nano $PROJECT_DIR/.env
-
-   Wichtig:
-   - DOMAINS
-   - LE_EMAIL
-   - CERTBOT_ENABLED / DNS_UPDATER_ENABLED (optional)
-   - ACME_CHALLENGE (dns=default / http=fallback)
-   - CLOUDFLARE_API_TOKEN (nur noetig wenn ACME_CHALLENGE=dns oder DNS_UPDATER_ENABLED=true)
-   - FTP_PUBLIC_HOST (oeffentliche IP/Domain!)
-   - DB Passwoerter aendern
-
-2) PORTS PRUEFEN
-   - 80, 443 (HTTP/HTTPS)
-   - 21 (FTP)
-   - 21000-21010 (FTP Passive)
-
-   Hinweis:
-   - ACME_CHALLENGE=http benoetigt Port 80 extern erreichbar
-   - HTTP-01 unterstuetzt KEIN Wildcard (*.domain)
-
-3) SYSTEM STARTEN
-   cd $PROJECT_DIR
-   docker compose up -d --build
-
-4) FTP BENUTZER ERSTELLEN
-   cd $PROJECT_DIR
-   ./tools/ftp/meowftp.py add webmaster example.com
-   ./tools/ftp/meowftp.py add admin ""
-   ./tools/ftp/meowftp.py apply
-
-5) ZERTIFIKATE
-   docker logs -f meowhome_certbot
-
-   Ohne Cloudflare:
-   - DNS_UPDATER_ENABLED=false
-   - ACME_CHALLENGE=http
-   - (Wildcard geht dann nicht)
-
-   Fuer FTPS (nach erfolgreicher Cert-Erstellung):
-   ./ftp/build-ftps-pem.sh example.com
-   Dann in .env: FTP_TLS=YES setzen
-   docker compose restart ftp
-
-NUETZLICHE BEFEHLE:
-==================
-docker compose ps
-docker compose logs -f
-./tools/warmup.sh
-./tools/permissions_hardening.sh --apply
-./tools/backup/backup.sh (without htdocs)
-./tools/backup/backup.sh --with-htdocs
-~/meowhome/tools/backup/restore.sh ~/meowhome/backups/meowhome-backup-YYYYmmdd-HHMMSS.tar.gz
-    </pre>
+<div class="card">
+  <details>
+    <summary><strong>Ersteinrichtung / Betriebsnotizen</strong></summary>
+    <div class="notice" style="margin-top:12px;">
+      Konfiguration, Ports, Domains, SSL und FTP werden zentral unter <a href="/setup">Setup</a> bzw. <a href="/ftp">FTP & Domains</a> gepflegt. Webdaten liegen weiterhin direkt unter <code>{{ project_dir }}/htdocs</code>; MeowHome verwendet dafür keine Docker-Named-Volumes.
+    </div>
+    <pre>docker compose up -d --build
+./tools/meowhome.py doctor
+./tools/backup/backup.sh --with-htdocs</pre>
   </details>
 </div>
-
-<div class="card">
-  <h3>Compose</h3>
-  <form method="post" action="/compose/action">
-    <button class="btn" name="action" value="pull">docker compose pull</button>
-    <button class="btn" name="action" value="build">docker compose build</button>
-    <button class="btn" name="action" value="up">docker compose up -d</button>
-    <button class="btn" name="action" value="recreate">up -d --force-recreate</button>
-  </form>
-</div>
-
-<div class="card">
-  <h3>Certbot / DNS</h3>
-
-  <form method="post" action="/certbot/renew" style="display:inline;">
-    <button class="btn">Certbot renew now</button>
-  </form>
-
-  <form method="post" action="/dns/run" style="display:inline;">
-    <button class="btn">DNS updater run now</button>
-  </form>
-</div>
-
-<h3>Container</h3>
-<div class="row">
-  {% for c in containers %}
-  <div class="card">
-    <div><strong>{{ c.name }}</strong></div>
-    <div class="muted">status: {{ c.status }}</div>
-    <div class="muted">image: {{ c.image }}</div>
-
-    <form method="post" action="/container/{{ c.name }}/action" style="margin-top:8px;">
-      <button class="btn" name="action" value="start">Start</button>
-      <button class="btn" name="action" value="stop">Stop</button>
-      <button class="btn" name="action" value="restart">Restart</button>
-      <a href="/container/{{ c.name }}/logs?lines=200">Logs</a>
-    </form>
-  </div>
-  {% endfor %}
-</div>
-
 {% endblock %}

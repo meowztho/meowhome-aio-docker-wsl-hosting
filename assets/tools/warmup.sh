@@ -1,48 +1,39 @@
 #!/usr/bin/env bash
 set -euo pipefail
-
 BASE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$BASE"
-
 LOG_DIR="$BASE/state"
 mkdir -p "$LOG_DIR"
 LOG="$LOG_DIR/warmup.log"
-
 ts() { date +"%Y-%m-%d %H:%M:%S"; }
 log() { echo "[$(ts)] $*" | tee -a "$LOG"; }
 
-log "warmup: start (base=$BASE)"
+compose() {
+  if docker compose version >/dev/null 2>&1; then
+    docker compose "$@"
+  elif command -v docker-compose >/dev/null 2>&1; then
+    docker-compose "$@"
+  else
+    log "ERROR: Docker Compose not available."
+    return 127
+  fi
+}
 
+log "warmup: start (base=$BASE)"
 for i in $(seq 1 60); do
   if docker info >/dev/null 2>&1; then
     log "Docker is available."
     break
   fi
-  if [ "$i" -eq 60 ]; then
+  if [[ "$i" -eq 60 ]]; then
     log "ERROR: Docker not available after 60s."
     exit 1
   fi
   sleep 1
 done
-
 sleep 10
 
-restart_one() {
-  local name="$1"
-  if docker ps -a --format '{{.Names}}' | grep -qx "$name"; then
-    log "Restarting: $name"
-    docker restart "$name" >/dev/null
-  else
-    log "WARNING: container not found: $name"
-  fi
-}
-
-restart_one "meowhome_db"
-restart_one "meowhome_php"
-restart_one "meowhome_apache"
-restart_one "meowhome_pma"
-restart_one "meowhome_dns_updater"
-restart_one "meowhome_ftp"
-restart_one "meowhome_certbot"
-
+# Compose owns lifecycle; restart the project's currently defined services in one operation.
+log "Restarting MeowHome services via Compose..."
+compose restart
 log "warmup: done"

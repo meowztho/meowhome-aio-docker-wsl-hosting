@@ -1,5 +1,77 @@
 # Changelog
 
+## v2.5.2
+### Fixed
+- Backup control-plane cards now support the intended 5/7-column split. The shared 12-column grid defines `col-5`/`col-7` and collapses them correctly on narrow screens, preventing the Backup page from shrinking both cards into single grid tracks.
+- README/release documentation was reconciled with the 2.5 Core-First behavior: direct WSL bind mounts, canonical backup tooling, UI configuration keys, current container names, and authoritative CHANGELOG linkage.
+
+## v2.5.1
+### Fixed
+- FTPS data-channel compatibility: generated `vsftpd.conf` now sets `require_ssl_reuse=NO`. This keeps TLS mandatory for login and data transfers while avoiding vsftpd `522` failures with clients that cannot reuse the control-channel TLS session (confirmed with Windows `curl.exe`).
+
+### Verified
+- Live upgrade validation confirmed FTPS login, directory listing, upload to a WSL bind-mounted domain, and resulting host ownership `1001:1001` with mode `664`.
+
+## v2.5.0
+### Added
+- FTP access modes now support one domain, multiple selected domains, or all domains per virtual user. Single-domain users land directly in that domain; multi-domain users see only their assigned domain folders.
+- Multi-domain isolation uses a generated Compose override with bind mounts to the existing WSL `htdocs/` folders; no Docker named volumes, ACL/FUSE layer, or copied web data are introduced.
+- Published HTTP, HTTPS, phpMyAdmin, and FTP control ports/bind addresses are first-class `.env` settings and editable from the Setup UI.
+- The Web UI is modernized into a consistent control plane for services, setup, FTP/domain access, VHosts, backups, health, and logs.
+- `MEOWHOME_HOST_PROJECT_DIR` records the absolute WSL installation path so Compose actions launched from inside the UI container still bind the real host files.
+
+### Changed
+- FTP UI consumes structured JSON from `meowftp.py` instead of parsing CLI text, keeping SQLite/CLI/UI on one core contract.
+- Existing FTP SQLite databases are migrated additively; legacy `home_rel` users remain valid.
+- Installer upgrades best-effort migrate hard-coded published ports from older managed Compose files into the new `.env` keys before replacing the managed Compose definition.
+- Installer and restore rebind location-specific host-path metadata to the actual target directory; installed backup/restore tools derive their default project from their own location rather than `$HOME`, fixing `sudo` accidentally targeting `/root/meowhome`.
+- UI-created config/VHost files and root-run backup archives are handed back to the canonical `PUID:PGID` owner.
+
+### Safety
+- Existing `.env`, VHosts, certificates, databases, `htdocs`, and FTP identities remain user/runtime-owned and are not replaced during upgrade.
+- Installer upgrades no longer run recursive permission hardening implicitly; ownership repair remains an explicit operator action after `doctor`/inspection.
+- Custom `docker-compose.override.yml` files are never overwritten by FTP multi-domain generation.
+- UI stack actions deliberately exclude the UI container itself to avoid self-recreate races.
+
+## v2.4.2
+### Fixed
+- Ownership-related `.env` readers now consistently use the last assignment, matching the effective dotenv value instead of allowing duplicate `PUID`/`PGID` lines to make FTP, backup/restore, FTPS PEM generation, or permission hardening disagree.
+- Installer upgrades collapse duplicate `PUID`/`PGID` entries while preserving the last configured value.
+
+### Improved
+- `meowhome.py doctor` reports duplicate `.env` keys, stale generated FTP user state, enabled all-domain FTP users, and top-level webroot ownership drift without modifying permissions.
+
+## v2.4.1
+### Fixed
+- Upgrade migration preserves legacy `FTP_HOST_UID`/`FTP_HOST_GID` as canonical `PUID`/`PGID` when an existing `.env` predates those keys, preventing ownership changes for existing FTP/web bind mounts.
+
+## v2.4.0
+### Added
+- Core-first operational contract documented in `ARCHITECTURE.md` and `AGENTS.md`
+- Stdlib-only `tools/meowhome.py` CLI with `schema`, `status`, `doctor`, `up`, targeted `restart`, and `logs`; diagnostics include sensitive-file permission checks
+- Automated regression tests and GitHub Actions verification
+
+### Fixed
+- Backup includes the canonical FTP user database (`ftp/users.sqlite`) while excluding generated `ftp/data/` state and raw MariaDB files; generated archives are owner-only (`0600` via `umask 077`)
+- Restore is overlay-only, supports empty disaster-recovery targets, preserves web content when `htdocs` was not backed up, validates tar paths, and rebuilds FTP auth state after restore
+- Installer upgrades no longer overwrite existing example webroot/VHost files or mutate running containers
+- Fresh installs use the invoking host UID/GID for `PUID`/`PGID`; legacy FTP UID/GID keys are no longer emitted
+- Fresh `.env` files, UI-created `.env` backups, FTP user SQLite state, and backup archives use owner-only permissions for sensitive data
+- FTP validation is consistent between CLI/UI, stale auth files are removed on apply, and an empty active-user set produces an empty auth DB instead of leaving old users active
+- UI FTP password creation no longer exposes plaintext passwords in process arguments; `openssl passwd` also receives plaintext via stdin
+- Setup UI applies changed UI login credentials immediately instead of attempting to recreate its own container
+- DNS updater only commits state after all requested changes succeed and selects the SPF TXT record instead of an arbitrary TXT record
+- Certbot retries failed initial issuance instead of falling into renew-only loops and includes the Docker CLI required to reload Apache after certificate changes
+- Apache receives only the `WIN_HOST_IP` variable required by shipped reverse-proxy templates instead of the entire `.env`
+- The shipped HTTP example VHost now routes `.php` through PHP-FPM instead of potentially serving PHP source as a static file before TLS is configured
+
+### Improved
+- Compose lifecycle handling prefers Compose v2 with compatibility fallback where appropriate; the Web UI ships Compose v2 from the official Docker CLI image
+- Permissions repair has one canonical implementation and preserves existing file executable bits
+- FTPS PEM creation validates its domain input and can use `FTP_CERT_DOMAIN` from `.env`
+- FTP hostname resolution no longer interpolates configuration values into embedded Python source
+- SQLite connections in the FTP tool are explicitly closed after each operation
+
 ## v2.3.3
 ### Added
 - VHost delete action in the Web UI (`/vhosts`) with per-file delete button and confirmation prompt

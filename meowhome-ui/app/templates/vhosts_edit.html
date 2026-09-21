@@ -1,13 +1,5 @@
 {% extends "base.html" %}
 {% block content %}
-<h2>Edit VHost: {{ file }}</h2>
-
-<form method="post" action="/vhosts/save">
-  <input type="hidden" name="file" value="{{ file }}">
-  <textarea name="content">{{ content }}</textarea>
-  <p class="muted">Beim Speichern: Backup, apachectl -t, graceful reload. Bei Fehler Rollback.</p>
-  <button class="btn" type="submit">Save</button>
-  <a href="/vhosts">Cancel</a>
-</form>
-
+<div class="page-header split"><div><div class="eyebrow">Apache VHost</div><h1>{{ file }}</h1><p class="muted">Backup → Syntaxprüfung → graceful reload; bei Fehler Rollback.</p></div><a class="btn" href="/vhosts">Zurück</a></div>
+<form method="post" action="/vhosts/save" class="stack"><input type="hidden" name="file" value="{{ file }}"><textarea name="content" spellcheck="false">{{ content }}</textarea><div class="toolbar"><button class="btn btn-primary" type="submit">Speichern & prüfen</button><a class="btn btn-ghost" href="/vhosts">Abbrechen</a></div></form>
 {% endblock %}

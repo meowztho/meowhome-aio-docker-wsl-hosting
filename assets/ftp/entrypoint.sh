@@ -23,13 +23,14 @@ resolve_ipv4() {
   fi
 
   if command -v python3 >/dev/null 2>&1; then
-    ip="$(python3 - <<PY 2>/dev/null || true
+    ip="$(python3 - "$v" <<'PYCODE' 2>/dev/null || true
 import socket
+import sys
 try:
-    print(socket.gethostbyname("$v"))
+    print(socket.gethostbyname(sys.argv[1]))
 except Exception:
     pass
-PY
+PYCODE
 )"
     if [ -n "${ip:-}" ]; then
       echo "$ip"
@@ -84,6 +85,7 @@ rsa_cert_file=/etc/ssl/private/vsftpd.pem
 rsa_private_key_file=/etc/ssl/private/vsftpd.pem
 force_local_logins_ssl=${FTP_TLS:-NO}
 force_local_data_ssl=${FTP_TLS:-NO}
+require_ssl_reuse=NO
 EOF
 
 chown root:root "$CFG_DIR/vsftpd.conf"

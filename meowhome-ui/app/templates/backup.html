@@ -1,58 +1,10 @@
-﻿{% extends "base.html" %}
+{% extends "base.html" %}
 {% block content %}
-  <h2>Backup</h2>
-
-  <h3>Backup erstellen</h3>
-  <form action="/backup/create" method="post">
-    <label>
-      <input type="checkbox" name="with_htdocs" value="true">
-      htdocs mit sichern (kann sehr gross sein)
-    </label>
-    <br><br>
-    <button type="submit">Create Backup</button>
-  </form>
-
-  {% if last_file %}
-    <h4>Neues Backup</h4>
-    <p>
-      Datei: <strong>{{ last_file }}</strong><br>
-      Download: <a href="/backup/download?file={{ last_file }}">Download</a>
-    </p>
-  {% endif %}
-
-  {% if last_output %}
-    <h4>Ausgabe</h4>
-    <pre style="white-space:pre-wrap;">{{ last_output }}</pre>
-  {% endif %}
-
-  <h3>Vorhandene Backups</h3>
-  {% if backups|length == 0 %}
-    <p>Keine Backups gefunden.</p>
-  {% else %}
-    <table border="1" cellpadding="6" cellspacing="0">
-      <thead>
-        <tr>
-          <th>Datei</th>
-          <th>Groesse</th>
-          <th>Datum</th>
-          <th>Download</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for b in backups %}
-        <tr>
-          <td>{{ b.name }}</td>
-          <td>{{ b.size }}</td>
-          <td>{{ b.mtime | int }}</td>
-          <td><a href="/backup/download?file={{ b.name }}">Download</a></td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-    <p>Hinweis: Datum ist Unix-Timestamp.</p>
-  {% endif %}
-
-  <h3>Restore</h3>
-  <p>Restore laeuft bewusst nicht ueber die UI. Nutze:</p>
-  <pre>~/meowhome/tools/backup/restore.sh ~/meowhome/backups/&lt;backup-file&gt;</pre>
+<div class="page-header split"><div><div class="eyebrow">Disaster recovery</div><h1>Backups</h1><p class="muted">MariaDB + Konfiguration, optional inklusive WSL-Webdaten.</p></div></div>
+<div class="grid">
+<section class="card col-5"><div class="card-title">Neues Backup</div><form action="/backup/create" method="post" class="stack" style="margin-top:14px;"><label class="check-item"><input type="checkbox" name="with_htdocs" value="true"> htdocs mitsichern</label><div class="muted">Für ein vollständiges Upgrade-/Restore-Backup empfohlen. Große Webroots erhöhen die Archivgröße.</div><button class="btn btn-primary" type="submit">Backup erstellen</button></form>{% if last_file %}<div class="notice" style="margin-top:14px;"><strong>{{ last_file }}</strong><br><a href="/backup/download?file={{ last_file }}">Archiv herunterladen</a></div>{% endif %}</section>
+<section class="card col-7"><div class="card-title">Restore</div><p>Restore bleibt bewusst Shell-only, damit ein fehlgeschlagener Browser-Request keinen halbfertigen Systemzustand erzeugt.</p><pre>./tools/backup/restore.sh ./backups/&lt;backup-file&gt;</pre><div class="notice warning">Vor einem Versionsupgrade ein Backup mit <code>htdocs</code> erstellen.</div></section>
+</div>
+{% if last_output %}<section class="card"><div class="card-title">Letzte Ausgabe</div><pre>{{ last_output }}</pre></section>{% endif %}
+<section class="card" style="margin-top:18px;"><div class="card-title">Vorhandene Backups</div>{% if backups %}<table><thead><tr><th>Datei</th><th>Größe</th><th>Timestamp</th><th></th></tr></thead><tbody>{% for b in backups %}<tr><td>{{ b.name }}</td><td>{{ b.size }} B</td><td>{{ b.mtime | int }}</td><td><a class="btn btn-sm" href="/backup/download?file={{ b.name }}">Download</a></td></tr>{% endfor %}</tbody></table>{% else %}<p class="muted">Noch keine Backups gefunden.</p>{% endif %}</section>
 {% endblock %}
