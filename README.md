@@ -828,7 +828,7 @@ docker compose up -d
 
 ### 🔁 Automatic Execution After Startup (Optional)
 
-If your system is affected by the WSL / Docker startup race condition, you may configure the warmup script to run automatically after startup.
+If your system is affected by the WSL / Docker startup race condition, you may configure the warmup script to run automatically after startup. Since v2.6.1 the warmup waits for both a real Docker Engine response and a successful fresh WSL bind-mount probe; only then does it recreate the MeowHome Compose services so containers created during the race cannot retain stale mount mirrors.
 
 ⚠️ Important: cron is NOT enabled by default in WSL
 
@@ -1233,3 +1233,23 @@ If MeowHome saves you time or helps you run your servers, please consider suppor
 ⭐ **Star this repo if it helped you!** ⭐
 
 </div>
+
+
+## External reverse-proxy networks
+
+When Apache proxies to containers owned by another Compose project, declare the shared external Docker network in `.env` instead of attaching it manually at runtime:
+
+```env
+MEOWHOME_WEB_EXTERNAL_NETWORKS=streamguide_proxy
+```
+
+Run `./init-meowhome.sh ~/meowhome` after changing this value, then recreate `web`. `./tools/meowhome.py doctor` verifies the live Apache network membership. A one-time `docker network connect` is not a durable configuration.
+
+### Cloudflare origin hardening
+
+Cloudflare proxying alone is not an enforced origin boundary. For Cloudflare-only HTTPS origins, prefer Authenticated Origin Pulls (mTLS) and enable Apache client-certificate enforcement only after Cloudflare-side AOP has been configured and verified. Do not use Docker-transformed source IPs as a trust boundary without proving the actual pre-NAT path.
+
+
+### Docker Desktop / WSL bind-mount recovery
+
+If `doctor` reports `wsl_bind_mount_unavailable`, first verify Docker Desktop's WSL integration and recreate the affected container after the integration is healthy. Do **not** treat a missing/stale bind mount as proof of a Unix ownership problem and do not start with recursive `chown`/`chmod`.

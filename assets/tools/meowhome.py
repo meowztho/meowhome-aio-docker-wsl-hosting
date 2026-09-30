@@ -18,7 +18,7 @@ import sys
 from dataclasses import asdict, dataclass
 from typing import Any, Iterable
 
-VERSION = "2.5.2"
+VERSION = "2.6.1"
 SERVICE_NAMES = (
     "web",
     "php",
@@ -226,6 +226,14 @@ def validate_config(project: pathlib.Path) -> list[Issue]:
             "MEOWHOME_HOST_PROJECT_DIR must be an absolute host path.",
             "Run the current init-meowhome.sh against this installation.",
         ))
+
+
+    external_networks = [x.strip() for x in env.get("MEOWHOME_WEB_EXTERNAL_NETWORKS", "").split(",") if x.strip()]
+    invalid_networks = [n for n in external_networks if not re.fullmatch(r"[A-Za-z0-9_.-]+", n)]
+    if invalid_networks:
+        issues.append(Issue("error", "external_network_name", "Invalid MEOWHOME_WEB_EXTERNAL_NETWORKS entries: " + ", ".join(invalid_networks)))
+    if len(set(external_networks)) != len(external_networks):
+        issues.append(Issue("warning", "external_network_duplicate", "MEOWHOME_WEB_EXTERNAL_NETWORKS contains duplicate names."))
 
     domains = [x.strip() for x in env.get("DOMAINS", "").split(",") if x.strip()]
     if not domains or any(re.search(r"[\s/]", d) for d in domains):
@@ -448,6 +456,30 @@ def runtime_status(project: pathlib.Path) -> tuple[dict[str, Any], list[Issue]]:
                     issues.append(Issue("warning", "compose_status_parse", "Could not parse docker compose ps JSON output."))
                     services = []
                     break
+
+    mount_probe = run(["docker", "exec", "meowhome_apache", "sh", "-lc", "test -d /var/www && test -d /etc/letsencrypt"], project, timeout=15)
+    if mount_probe.returncode != 0:
+        issues.append(Issue(
+            "error",
+            "wsl_bind_mount_unavailable",
+            "Apache cannot see expected WSL-backed bind mounts (/var/www and/or /etc/letsencrypt).",
+            "Check Docker Desktop WSL integration/mount state before changing Unix ownership or permissions; recreate the affected container after integration is healthy.",
+        ))
+
+    env = read_env(project / ".env")
+    expected_networks = [x.strip() for x in env.get("MEOWHOME_WEB_EXTERNAL_NETWORKS", "").split(",") if x.strip()]
+    if expected_networks:
+        inspect = run(["docker", "inspect", "meowhome_apache", "--format", "{{json .NetworkSettings.Networks}}"], project, timeout=15)
+        if inspect.returncode == 0:
+            try:
+                attached = set(json.loads(inspect.stdout.strip() or "{}").keys())
+                missing = [n for n in expected_networks if n not in attached]
+                if missing:
+                    issues.append(Issue("error", "web_external_network_missing", "Apache is missing configured external Docker networks: " + ", ".join(missing), "Recreate web from the declared Compose model; do not use one-time docker network connect as the durable fix."))
+            except json.JSONDecodeError:
+                issues.append(Issue("warning", "network_status_parse", "Could not parse Apache Docker network membership."))
+        else:
+            issues.append(Issue("warning", "network_status", "Could not inspect Apache Docker network membership."))
 
     return {"available": True, "command": compose, "services": services}, issues
 

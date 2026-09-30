@@ -1,5 +1,23 @@
 # Changelog
 
+## v2.6.1
+### Fixed
+- WSL/Docker startup warmup no longer treats `docker info` exit status as sufficient readiness evidence. It requires an actual Docker server version plus a fresh bind-mount probe of the installed MeowHome project.
+- After readiness is proven, warmup recreates the Compose services with `up -d --force-recreate --no-build` instead of merely restarting existing containers, preventing stale Docker Desktop WSL bind-mount mirrors from surviving the boot race.
+- The readiness window is extended to 180 seconds and fails closed without touching containers if Docker Desktop WSL integration never becomes healthy.
+
+### Verified
+- Live Windows 11 / WSL2 recovery reproduced the race: FTP and StreamGuide restart loops, stale Apache certificate mount, and a file-bind mirror created as a directory. After restoring Docker Desktop's user-distro proxy and recreating affected containers, FTP and PHP were `Up`, StreamGuide was `healthy`, Apache retained both `meowhome_default` and `streamguide_proxy`, and public HTTPS returned HTTP 200.
+
+## v2.6.0
+### Added
+- Declarative external reverse-proxy network support via `MEOWHOME_WEB_EXTERNAL_NETWORKS`; Apache network membership is rendered into the Compose model instead of relying on one-time `docker network connect`.
+- `doctor` validates external network names and, at runtime, verifies that `meowhome_apache` is actually attached to every configured external network.
+- Recovery guidance now treats Docker Desktop/WSL bind-mount integration failure separately from real Unix permission drift.
+
+### Security / Hardening
+- Documents Cloudflare Authenticated Origin Pulls as the preferred opt-in origin-authentication path. Enforcement is intentionally not enabled automatically because Cloudflare-side AOP must be configured and verified first.
+
 ## v2.5.2
 ### Fixed
 - Backup control-plane cards now support the intended 5/7-column split. The shared 12-column grid defines `col-5`/`col-7` and collapses them correctly on narrow screens, preventing the Backup page from shrinking both cards into single grid tracks.

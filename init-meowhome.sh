@@ -3,7 +3,7 @@ set -euo pipefail
 
 # ============================================================
 # MeowHome Bootstrapper (Core + Tools + FTP Virtual Users)
-# Version: 2.5.2 (Web UI backup layout hotfix)
+# Version: 2.6.1 (reverse-proxy lifecycle hardening)
 # - erstellt ~/meowhome komplett
 # - Tools unter ./tools (modular erweiterbar)
 # - FTP: vsftpd Virtual Users + Tool (SQLite auf Host)
@@ -234,7 +234,38 @@ append_env_if_missing "MEOWHOME_UI_BIND" "127.0.0.1"
 append_env_if_missing "MEOWHOME_UI_PORT" "9090"
 append_env_if_missing "MEOWHOME_UI_USER" "admin"
 append_env_if_missing "MEOWHOME_UI_PASS" "admin"
+append_env_if_missing "MEOWHOME_WEB_EXTERNAL_NETWORKS" ""
 
+
+
+render_web_external_networks() {
+  local compose_file="$PROJECT_DIR/docker-compose.yml"
+  local raw names=() name web_block="" top_block=""
+  raw="$(grep -E '^MEOWHOME_WEB_EXTERNAL_NETWORKS=' "$PROJECT_DIR/.env" | tail -n1 | cut -d= -f2- || true)"
+  IFS=',' read -r -a names <<< "$raw"
+  for name in "${names[@]}"; do
+    name="$(printf '%s' "$name" | xargs)"
+    [ -z "$name" ] && continue
+    if [[ ! "$name" =~ ^[A-Za-z0-9_.-]+$ ]]; then
+      echo "ERROR: invalid external Docker network name: $name" >&2
+      exit 1
+    fi
+    if [ -z "$web_block" ]; then
+      web_block=$'    networks:\n      - default'
+    fi
+    web_block+=$'\n      - '"$name"
+    top_block+=$'  '"$name"$':\n    external: true\n    name: '"$name"$'\n'
+  done
+  python3 - "$compose_file" "$web_block" "$top_block" <<'PY_RENDER'
+from pathlib import Path
+import sys
+path=Path(sys.argv[1]); web=sys.argv[2]; top=sys.argv[3]
+s=path.read_text()
+s=s.replace('#__MEOWHOME_WEB_EXTERNAL_NETWORKS__', web)
+s=s.replace('#__MEOWHOME_TOP_LEVEL_EXTERNAL_NETWORKS__', ('networks:\n'+top.rstrip()) if top else '')
+path.write_text(s)
+PY_RENDER
+}
 
 # ----------------------------
 # Beispiel Webroot
@@ -298,6 +329,7 @@ chmod +x "$PROJECT_DIR/tools/ftp/fix-permissions.sh"
 # - certbot bekommt optional webroot mount fuer HTTP-01
 # ----------------------------
 cp "$SCRIPT_DIR/assets/root/docker-compose.yml" "$PROJECT_DIR/docker-compose.yml"
+render_web_external_networks
 # ----------------------------
 # Optional: MeowHome Web UI (wenn ./meowhome-ui neben dem Installer liegt)
 # ----------------------------

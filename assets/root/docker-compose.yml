@@ -17,6 +17,7 @@ services:
     depends_on:
       - php
     restart: unless-stopped
+#__MEOWHOME_WEB_EXTERNAL_NETWORKS__
 
   php:
     build:
@@ -96,3 +97,4 @@ services:
 
 #__MEOWHOME_UI_SERVICE__
 
+#__MEOWHOME_TOP_LEVEL_EXTERNAL_NETWORKS__
