@@ -2,7 +2,6 @@
 
 **All-in-One Docker-based Web Hosting Stack with FTP, SSL, DNS, backups, and a local control plane**
 
-Current release: **2.5.2**
 
 MeowHome is a lightweight multi-domain hosting stack for Linux/WSL2. Apache, PHP, MariaDB, FTPS, Let's Encrypt, DNS automation, and the Web UI run in Docker, while persistent website and service data stays directly in the project directory as WSL/Linux bind-mounted files rather than Docker named volumes.
 
