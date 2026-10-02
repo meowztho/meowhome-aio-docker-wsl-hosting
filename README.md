@@ -2,6 +2,7 @@
 
 **All-in-One Docker-based Web Hosting Stack with FTP, SSL, DNS, backups, and a local control plane**
 
+Current release: **2.5.2**
 
 MeowHome is a lightweight multi-domain hosting stack for Linux/WSL2. Apache, PHP, MariaDB, FTPS, Let's Encrypt, DNS automation, and the Web UI run in Docker, while persistent website and service data stays directly in the project directory as WSL/Linux bind-mounted files rather than Docker named volumes.
 
@@ -1252,3 +1253,18 @@ Cloudflare proxying alone is not an enforced origin boundary. For Cloudflare-onl
 ### Docker Desktop / WSL bind-mount recovery
 
 If `doctor` reports `wsl_bind_mount_unavailable`, first verify Docker Desktop's WSL integration and recreate the affected container after the integration is healthy. Do **not** treat a missing/stale bind mount as proof of a Unix ownership problem and do not start with recursive `chown`/`chmod`.
+
+## Apache VHosts and optional Cloudflare AOP
+
+Active Apache VHosts under `apache/vhosts/*.conf` are MeowHome control-plane files. Their canonical host ownership is `PUID:PGID`; MeowHome does not apply this rule recursively to website content, databases, or certificates. Use `./tools/meowhome.py repair-control-plane` for an explicit repair, or open the VHost page in the UI, which invokes the same Core repair.
+
+MeowHome ships Cloudflare's public Authenticated Origin Pull CA at `apache/snippets/cloudflare-origin-pull-ca.pem`. A VHost may opt in with:
+
+```apache
+SSLCACertificateFile /etc/apache2/snippets/cloudflare-origin-pull-ca.pem
+SSLVerifyClient require
+SSLVerifyDepth 1
+```
+
+Do not enable `SSLVerifyClient require` until Authenticated Origin Pulls is enabled for that hostname at Cloudflare; otherwise Cloudflare-to-origin TLS requests will be rejected.
+

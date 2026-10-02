@@ -3,7 +3,7 @@ set -euo pipefail
 
 # ============================================================
 # MeowHome Bootstrapper (Core + Tools + FTP Virtual Users)
-# Version: 2.6.1 (reverse-proxy lifecycle hardening)
+# Version: 2.6.2 (Apache control-plane ownership + AOP asset hardening)
 # - erstellt ~/meowhome komplett
 # - Tools unter ./tools (modular erweiterbar)
 # - FTP: vsftpd Virtual Users + Tool (SQLite auf Host)
@@ -282,6 +282,12 @@ cp "$SCRIPT_DIR/assets/apache/snippets/php-fpm.conf" "$PROJECT_DIR/apache/snippe
 cp "$SCRIPT_DIR/assets/apache/snippets/ssl-common.conf" "$PROJECT_DIR/apache/snippets/ssl-common.conf"
 
 cp "$SCRIPT_DIR/assets/apache/snippets/cf-safe-redirect.conf" "$PROJECT_DIR/apache/snippets/cf-safe-redirect.conf"
+
+# Public CA used by optional Cloudflare Authenticated Origin Pulls. Shipping it
+# as a managed snippet makes SSLCACertificateFile references deterministic; AOP
+# enforcement itself remains per-vhost and opt-in.
+cp "$SCRIPT_DIR/assets/apache/snippets/cloudflare-origin-pull-ca.pem" "$PROJECT_DIR/apache/snippets/cloudflare-origin-pull-ca.pem"
+chmod 0644 "$PROJECT_DIR/apache/snippets/cloudflare-origin-pull-ca.pem"
 
 # ----------------------------
 # Apache VHosts (Example)

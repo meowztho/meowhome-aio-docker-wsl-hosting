@@ -23,6 +23,7 @@ PROJECT_DIR = os.getenv("MEOWHOME_PROJECT_DIR", "/meowhome")
 VHOST_DIR = os.path.join(PROJECT_DIR, "apache", "vhosts")
 BACKUPS_DIR = os.path.join(PROJECT_DIR, "backups")
 BACKUP_TOOL = os.path.join(PROJECT_DIR, "tools", "backup", "backup.sh")
+CORE_TOOL = os.path.join(PROJECT_DIR, "tools", "meowhome.py")
 ENV_PATH = os.path.join(PROJECT_DIR, ".env")
 
 UI_USER = os.getenv("MEOWHOME_UI_USER", "admin")
@@ -337,7 +338,7 @@ def set_host_file_metadata(path: pathlib.Path, mode: int) -> None:
             os.chown(path, ids[0], ids[1])
 
 
-def safe_write_file(path: str, content: str, mode: int = 0o644) -> None:
+def safe_write_file(path: str, content: str, mode: int = 0o664) -> None:
     p = pathlib.Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(content, encoding="utf-8")
@@ -353,6 +354,28 @@ def backup_file(path: str) -> Optional[str]:
     backup.write_bytes(p.read_bytes())
     set_host_file_metadata(backup, p.stat().st_mode & 0o777)
     return str(backup)
+
+
+def ensure_vhost_control_plane_metadata() -> None:
+    if not os.path.isfile(CORE_TOOL):
+        raise HTTPException(status_code=500, detail=f"MeowHome Core-Tool fehlt: {CORE_TOOL}")
+    res = sh(["python3", CORE_TOOL, "--project", PROJECT_DIR, "repair-control-plane", "--json"], cwd=PROJECT_DIR, timeout=30)
+    if res.returncode != 0:
+        detail = (res.stderr or res.stdout or "repair-control-plane failed").strip()
+        raise HTTPException(status_code=500, detail=detail)
+
+
+def validate_vhost_managed_dependencies(content: str) -> Optional[str]:
+    for match in re.finditer(r"(?mi)^\s*SSLCACertificateFile\s+[\"']?([^\"'\s]+)", content or ""):
+        apache_path = match.group(1)
+        host_path: Optional[pathlib.Path] = None
+        if apache_path.startswith("/etc/apache2/snippets/"):
+            host_path = pathlib.Path(PROJECT_DIR) / "apache/snippets" / apache_path.rsplit("/", 1)[-1]
+        elif apache_path.startswith("/etc/letsencrypt/"):
+            host_path = pathlib.Path(PROJECT_DIR) / "letsencrypt" / apache_path[len("/etc/letsencrypt/"):]
+        if host_path is not None and (not host_path.is_file() or host_path.stat().st_size == 0):
+            return f"Managed Apache dependency is missing or empty: {apache_path} (host: {host_path})"
+    return None
 
 
 def apache_test_and_reload() -> Dict[str, Any]:
@@ -1109,6 +1132,7 @@ def ftp_enable(
 
 @app.get("/vhosts", response_class=HTMLResponse)
 def vhosts(request: Request, user: str = Depends(require_auth)):
+    ensure_vhost_control_plane_metadata()
     p = pathlib.Path(VHOST_DIR)
     files = []
     if p.exists():
@@ -1124,6 +1148,7 @@ def vhosts(request: Request, user: str = Depends(require_auth)):
 
 @app.get("/vhosts/edit", response_class=HTMLResponse)
 def vhosts_edit(request: Request, file: str, user: str = Depends(require_auth)):
+    ensure_vhost_control_plane_metadata()
     file = file.strip()
     full_path = resolve_vhost_file(file)
 
@@ -1144,18 +1169,28 @@ def vhosts_save(
     content: str = Form(...),
     user: str = Depends(require_auth)
 ):
+    ensure_vhost_control_plane_metadata()
     file = file.strip()
     full_path = resolve_vhost_file(file)
 
+    dependency_error = validate_vhost_managed_dependencies(content)
+    if dependency_error:
+        return render_text_page(
+            "VHost dependency missing",
+            dependency_error + "\n\nRun the current MeowHome installer/upgrade before enabling that directive.",
+            back_url=f"/vhosts/edit?file={file}",
+            status_code=400,
+        )
+
     full = str(full_path)
     bak = backup_file(full)
-    safe_write_file(full, content)
+    safe_write_file(full, content, mode=0o664)
 
     result = apache_test_and_reload()
     if not result.get("ok"):
         if bak and os.path.exists(bak):
             pathlib.Path(full).write_bytes(pathlib.Path(bak).read_bytes())
-            set_host_file_metadata(pathlib.Path(full), 0o644)
+            set_host_file_metadata(pathlib.Path(full), 0o664)
         details = "\n".join([
             "Apache config test failed. Changes were rolled back.",
             "",
@@ -1172,6 +1207,7 @@ def vhosts_delete(
     file: str = Form(...),
     user: str = Depends(require_auth)
 ):
+    ensure_vhost_control_plane_metadata()
     file = file.strip()
     full_path = resolve_vhost_file(file)
 
@@ -1200,7 +1236,7 @@ def vhosts_delete(
     if not result.get("ok"):
         if bak and os.path.exists(bak):
             pathlib.Path(full).write_bytes(pathlib.Path(bak).read_bytes())
-            set_host_file_metadata(pathlib.Path(full), 0o644)
+            set_host_file_metadata(pathlib.Path(full), 0o664)
         details = "\n".join([
             "Apache config test failed. Deletion was rolled back.",
             "",

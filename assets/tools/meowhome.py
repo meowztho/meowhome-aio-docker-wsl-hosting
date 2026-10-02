@@ -18,7 +18,7 @@ import sys
 from dataclasses import asdict, dataclass
 from typing import Any, Iterable
 
-VERSION = "2.6.1"
+VERSION = "2.6.2"
 SERVICE_NAMES = (
     "web",
     "php",
@@ -157,6 +157,73 @@ def _int_range(env: dict[str, str], key: str, low: int, high: int, issues: list[
     if not (low <= value <= high):
         issues.append(Issue("error", "numeric_range", f"{key}={value} is outside {low}..{high}."))
     return value
+
+
+def canonical_host_ids(project: pathlib.Path) -> tuple[int, int] | None:
+    env = read_env(project / ".env")
+    puid = env.get("PUID", "")
+    pgid = env.get("PGID", "")
+    if not (puid.isdigit() and pgid.isdigit()):
+        return None
+    return int(puid), int(pgid)
+
+
+def _set_control_plane_metadata(path: pathlib.Path, mode: int, ids: tuple[int, int]) -> None:
+    os.chmod(path, mode)
+    st = path.stat()
+    if (st.st_uid, st.st_gid) == ids:
+        return
+    if os.geteuid() != 0:
+        raise PermissionError(
+            f"{path} is owned by {st.st_uid}:{st.st_gid}; root is required to change it to {ids[0]}:{ids[1]}"
+        )
+    os.chown(path, ids[0], ids[1])
+
+
+def repair_control_plane_permissions(project: pathlib.Path) -> dict[str, Any]:
+    """Normalize only MeowHome-owned Apache control-plane metadata.
+
+    This deliberately does not recurse into htdocs, database data, certificates,
+    or user content. Active vhost files are editable configuration owned by the
+    canonical host identity from PUID/PGID.
+    """
+    ids = canonical_host_ids(project)
+    if ids is None:
+        raise RuntimeError("PUID/PGID must be numeric before repairing control-plane permissions")
+
+    changed: list[str] = []
+    targets: list[tuple[pathlib.Path, int]] = []
+    vhost_dir = project / "apache/vhosts"
+    snippets_dir = project / "apache/snippets"
+    if vhost_dir.is_dir():
+        targets.append((vhost_dir, 0o2775))
+        targets.extend((p, 0o664) for p in sorted(vhost_dir.glob("*.conf")) if p.is_file())
+    if snippets_dir.is_dir():
+        targets.append((snippets_dir, 0o755))
+        for name in (
+            "php-fpm.conf",
+            "ssl-common.conf",
+            "cf-safe-redirect.conf",
+            "cloudflare-origin-pull-ca.pem",
+        ):
+            candidate = snippets_dir / name
+            if candidate.is_file():
+                targets.append((candidate, 0o644))
+
+    for path, mode in targets:
+        before = path.stat()
+        _set_control_plane_metadata(path, mode, ids)
+        after = path.stat()
+        if (before.st_uid, before.st_gid, stat.S_IMODE(before.st_mode)) != (
+            after.st_uid, after.st_gid, stat.S_IMODE(after.st_mode)
+        ):
+            changed.append(str(path.relative_to(project)))
+
+    return {
+        "project": str(project),
+        "owner": f"{ids[0]}:{ids[1]}",
+        "changed": changed,
+    }
 
 
 def validate_config(project: pathlib.Path) -> list[Issue]:
@@ -415,6 +482,55 @@ def validate_config(project: pathlib.Path) -> list[Issue]:
                         "Verify ACL/intent before changing ownership; do not blindly chown recursively.",
                     ))
 
+                vhost_dir = project / "apache/vhosts"
+                if vhost_dir.is_dir():
+                    control_drift = []
+                    try:
+                        dir_st = vhost_dir.stat()
+                        if (dir_st.st_uid, dir_st.st_gid) != expected or stat.S_IMODE(dir_st.st_mode) != 0o2775:
+                            control_drift.append(
+                                f"apache/vhosts={dir_st.st_uid}:{dir_st.st_gid}/{stat.S_IMODE(dir_st.st_mode):04o}"
+                            )
+                        for conf in sorted(vhost_dir.glob("*.conf")):
+                            if not conf.is_file():
+                                continue
+                            st = conf.stat()
+                            mode = stat.S_IMODE(st.st_mode)
+                            if (st.st_uid, st.st_gid) != expected or mode != 0o664:
+                                control_drift.append(f"{conf.name}={st.st_uid}:{st.st_gid}/{mode:04o}")
+                    except OSError:
+                        control_drift = []
+                    if control_drift:
+                        issues.append(Issue(
+                            "warning",
+                            "apache_control_plane_owner_drift",
+                            f"Apache VHost control-plane metadata differs from PUID:PGID {expected[0]}:{expected[1]} and canonical modes: "
+                            + ", ".join(control_drift),
+                            "Run: sudo ./tools/meowhome.py repair-control-plane (or open VHosts in the MeowHome UI, which runs the same repair).",
+                        ))
+
+    aop_ca = project / "apache/snippets/cloudflare-origin-pull-ca.pem"
+    vhost_dir = project / "apache/vhosts"
+    if vhost_dir.is_dir():
+        aop_referenced = False
+        try:
+            for conf in vhost_dir.glob("*.conf"):
+                if not conf.is_file():
+                    continue
+                text = conf.read_text(encoding="utf-8", errors="replace")
+                if "/etc/apache2/snippets/cloudflare-origin-pull-ca.pem" in text:
+                    aop_referenced = True
+                    break
+        except OSError:
+            pass
+        if aop_referenced and (not aop_ca.is_file() or aop_ca.stat().st_size == 0):
+            issues.append(Issue(
+                "error",
+                "cloudflare_aop_ca_missing",
+                "A VHost references the managed Cloudflare Authenticated Origin Pull CA, but apache/snippets/cloudflare-origin-pull-ca.pem is missing or empty.",
+                "Run the current init-meowhome.sh upgrade before enabling SSLVerifyClient require.",
+            ))
+
     if "FTP_ENABLED" in env:
         issues.append(Issue("warning", "legacy_ftp_enabled", "FTP_ENABLED is no longer used; remove it from .env."))
     legacy_uid = env.get("FTP_HOST_UID", "")
@@ -566,6 +682,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("service")
     p.add_argument("--lines", type=int, default=200)
     p.add_argument("--follow", action="store_true")
+
+    p = sub.add_parser("repair-control-plane")
+    p.add_argument("--json", action="store_true")
     return parser
 
 
@@ -585,6 +704,14 @@ def main(argv: Iterable[str] | None = None) -> int:
         result = {"project": str(project), "runtime": runtime, "issues": [asdict(i) for i in issues]}
         print_value(result, args.json)
         return 0 if not any(i.severity == "error" for i in issues) else 1
+    if args.command == "repair-control-plane":
+        try:
+            result = repair_control_plane_permissions(project)
+        except (OSError, RuntimeError) as exc:
+            print(f"repair-control-plane failed: {exc}", file=sys.stderr)
+            return 1
+        print_value(result, args.json)
+        return 0
 
     compose = require_compose(project)
     if args.command == "up":

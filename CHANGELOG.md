@@ -1,5 +1,14 @@
 # Changelog
 
+## v2.6.2
+### Fixed
+- Apache VHost control-plane ownership is now canonicalized to `PUID:PGID`; the UI repairs historical `root:root` active `.conf` drift before VHost operations without touching webroots or database data.
+- VHost files use mode `0664` consistently, including rollback paths.
+- The official Cloudflare Authenticated Origin Pull CA is shipped as the managed snippet `apache/snippets/cloudflare-origin-pull-ca.pem`, so opt-in AOP VHosts have a deterministic CA path.
+- VHost saves preflight managed `SSLCACertificateFile` dependencies and report a precise missing-asset error instead of relying on a generic Apache rollback.
+- `doctor` reports Apache control-plane ownership drift and missing referenced AOP CA assets.
+- Added `./tools/meowhome.py repair-control-plane` for an explicit Core-owned repair path.
+
 ## v2.6.1
 ### Fixed
 - WSL/Docker startup warmup no longer treats `docker info` exit status as sufficient readiness evidence. It requires an actual Docker server version plus a fresh bind-mount probe of the installed MeowHome project.
@@ -28,7 +37,7 @@
 - FTPS data-channel compatibility: generated `vsftpd.conf` now sets `require_ssl_reuse=NO`. This keeps TLS mandatory for login and data transfers while avoiding vsftpd `522` failures with clients that cannot reuse the control-channel TLS session (confirmed with Windows `curl.exe`).
 
 ### Verified
-- Live upgrade validation confirmed FTPS login, directory listing, upload to a WSL bind-mounted domain, and resulting host ownership `1001:1001` with mode `664`.
+- Live upgrade validation confirmed FTPS login, directory listing, upload to a WSL bind-mounted domain, and resulting host ownership matching the configured `PUID:PGID` with mode `664`.
 
 ## v2.5.0
 ### Added
