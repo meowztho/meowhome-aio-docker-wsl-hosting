@@ -1,0 +1,5 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-header"><div><div class="eyebrow">{{ site.host }}</div><h1>{{ file.path }}</h1><p class="muted">UTF-8 Textdatei · {{ file.size }} Bytes</p></div><div class="toolbar"><a class="btn" href="/sites/{{ site.host }}/files?path={{ file.path.rsplit('/', 1)[0]|urlencode if '/' in file.path else '' }}">Zurück</a></div></div>
+<div class="card"><form method="post" action="/sites/{{ site.host }}/files/save" class="stack"><input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}"><input type="hidden" name="path" value="{{ file.path }}"><textarea name="content" rows="28" spellcheck="false" style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace">{{ file.content }}</textarea><div class="toolbar"><button class="btn btn-primary" type="submit">Speichern</button><span class="muted">Apache-/VHost-Konfiguration wird hier nicht bearbeitet; dies ist nur Webcontent.</span></div></form></div>
+{% endblock %}

@@ -63,11 +63,19 @@ services:
       dockerfile: Dockerfile
     container_name: meowhome_certbot
     env_file: ./.env
+    environment:
+      MEOWHOME_CONTROL_URL: http://control:8765
+      MEOWHOME_CONTROL_TOKEN_FILE: /run/secrets/meowhome-certbot-control-token
     volumes:
       - "${MEOWHOME_HOST_PROJECT_DIR:-.}/letsencrypt:/etc/letsencrypt"
       - "${MEOWHOME_HOST_PROJECT_DIR:-.}/state:/state"
       - "${MEOWHOME_HOST_PROJECT_DIR:-.}/htdocs:/var/www:rw"
-      - /var/run/docker.sock:/var/run/docker.sock
+      - "${MEOWHOME_HOST_PROJECT_DIR:-.}/control/certbot.token:/run/secrets/meowhome-certbot-control-token:ro"
+    networks:
+      - default
+      - control_net
+    depends_on:
+      - control
     restart: unless-stopped
 
   dns_updater:
@@ -81,6 +89,8 @@ services:
     restart: unless-stopped
 
   ftp:
+    # Reap orphaned session processes outside vsftpd's own child accounting.
+    init: true
     build:
       context: ./ftp
       dockerfile: Dockerfile
@@ -95,6 +105,28 @@ services:
       - "${FTP_BIND:-0.0.0.0}:${FTP_PASV_MIN}-${FTP_PASV_MAX}:${FTP_PASV_MIN}-${FTP_PASV_MAX}"
     restart: unless-stopped
 
+  control:
+    build:
+      context: ./meowhome-control
+      dockerfile: Dockerfile
+    container_name: meowhome_control
+    environment:
+      MEOWHOME_PROJECT_DIR: /meowhome
+      MEOWHOME_HOST_PROJECT_DIR: ${MEOWHOME_HOST_PROJECT_DIR:?MEOWHOME_HOST_PROJECT_DIR must be set}
+      MEOWHOME_CONTROL_TOKEN_FILE: /run/secrets/meowhome-control-token
+      MEOWHOME_CERTBOT_CONTROL_TOKEN_FILE: /run/secrets/meowhome-certbot-control-token
+    volumes:
+      - "${MEOWHOME_HOST_PROJECT_DIR:-.}:/meowhome:rw"
+      - "${MEOWHOME_HOST_PROJECT_DIR:-.}/control/control.token:/run/secrets/meowhome-control-token:ro"
+      - "${MEOWHOME_HOST_PROJECT_DIR:-.}/control/certbot.token:/run/secrets/meowhome-certbot-control-token:ro"
+      - "${MEOWHOME_DOCKER_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock"
+    networks:
+      - control_net
+    restart: unless-stopped
+
 #__MEOWHOME_UI_SERVICE__
 
+networks:
+  control_net:
+    internal: true
 #__MEOWHOME_TOP_LEVEL_EXTERNAL_NETWORKS__

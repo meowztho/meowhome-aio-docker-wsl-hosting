@@ -1,85 +1,35 @@
 {% extends "base.html" %}
 {% block content %}
-<div class="page-header split">
-  <div>
-    <div class="eyebrow">Control Plane</div>
-    <h1>Dashboard</h1>
-    <p class="muted">{{ project_dir }} · Docker {{ "erreichbar" if docker_ok else "nicht erreichbar" }}</p>
-  </div>
-  <div class="toolbar">
-    <a class="btn btn-primary" href="/setup">Konfiguration</a>
-    <a class="btn" href="/health">Health Check</a>
-  </div>
+<div class="page-header">
+  <div><div class="eyebrow">Hosting overview</div><h1>Übersicht</h1><p class="muted">Websites, Zertifikate, Datenbanken und Systemzustand auf einen Blick.</p></div>
+  <div class="toolbar"><a class="btn btn-primary" href="/sites/new">Website hinzufügen</a><a class="btn" href="/health">Services prüfen</a></div>
 </div>
-
 {% set running = containers | selectattr('status', 'equalto', 'running') | list | length %}
+{% set good_certs = certs | selectattr('status', 'equalto', 'ok') | list | length %}
 <div class="grid">
-  <div class="card col-4"><div class="muted">Services</div><div class="kpi">{{ containers|length }}</div><div class="muted">MeowHome Container erkannt</div></div>
-  <div class="card col-4"><div class="muted">Running</div><div class="kpi">{{ running }}</div><div class="muted">von {{ containers|length }} Services</div></div>
-  <div class="card col-4"><div class="muted">Docker</div><div class="kpi {{ 'ok' if docker_ok else 'error' }}">{{ 'OK' if docker_ok else 'ERROR' }}</div><div class="muted">Engine-Verbindung</div></div>
+  <a class="card stat-card col-3" href="/sites"><div class="eyebrow">Websites</div><div class="kpi">{{ sites|length }}</div><div class="kpi-label">Domains & Reverse Proxies</div></a>
+  <a class="card stat-card col-3" href="/certificates"><div class="eyebrow">SSL/TLS</div><div class="kpi">{{ sites|length - tls_issues|length }}/{{ sites|length }}</div><div class="kpi-label">Websites mit passendem TLS-Zertifikat</div></a>
+  <a class="card stat-card col-3" href="/databases"><div class="eyebrow">Datenbanken</div><div class="kpi">{{ databases|length }}</div><div class="kpi-label">Anwendungsdatenbanken</div></a>
+  <a class="card stat-card col-3" href="/backup"><div class="eyebrow">Backups</div><div class="kpi">{{ backups|length }}</div><div class="kpi-label">verfügbare Archive</div></a>
 </div>
-
-<div class="grid">
+<div class="grid" style="margin-top:16px;">
   <section class="card col-8">
-    <div class="card-header split">
-      <div><div class="eyebrow">Runtime</div><div class="card-title">Services</div></div>
-      <a class="btn btn-sm" href="/health">Details</a>
-    </div>
-    <div class="stack">
-      {% for c in containers %}
-      <div class="split" style="padding:10px 0;border-bottom:1px solid var(--border);">
-        <div>
-          <strong>{{ c.name }}</strong>
-          <div class="muted">{{ c.image or 'lokales Image' }}</div>
-        </div>
-        <div class="toolbar">
-          <span class="badge {{ 'ok' if c.status == 'running' else 'warning' }}">{{ c.status }}</span>
-          {% if c.name != 'meowhome_ui' %}
-          <form method="post" action="/container/{{ c.name }}/action" class="toolbar">
-            {% if c.status == 'running' %}
-            <button class="btn btn-sm" name="action" value="restart">Restart</button>
-            <button class="btn btn-sm btn-ghost" name="action" value="stop">Stop</button>
-            {% else %}
-            <button class="btn btn-sm btn-primary" name="action" value="start">Start</button>
-            {% endif %}
-          </form>
-          {% else %}<span class="badge">host-controlled</span>{% endif %}
-          <a class="btn btn-sm btn-ghost" href="/container/{{ c.name }}/logs?lines=200">Logs</a>
-        </div>
-      </div>
-      {% else %}
-      <div class="notice warning">Keine MeowHome-Container gefunden. Nach einer frischen Installation zuerst Compose starten.</div>
-      {% endfor %}
+    <div class="card-header"><div><div class="eyebrow">Web hosting</div><div class="card-title">Websites & Domains</div></div><a class="btn btn-sm" href="/sites">Alle verwalten</a></div>
+    <div class="resource-list">
+      {% for s in sites[:6] %}<div class="resource-row"><div class="resource-main"><strong>{{ s.host }}</strong><div class="muted">{{ 'Reverse Proxy' if s.kind == 'proxy' else 'Website' if s.kind == 'website' else 'Custom VHost' }}</div></div><div class="resource-meta">{% if s.kind == 'proxy' %}{{ s.proxy_target }}{% else %}{{ s.document_root or '—' }}{% endif %}</div><div class="resource-meta"><span class="badge {{ 'ok' if s.tls_status == 'ok' else 'warning' if s.tls_status == 'warning' else 'error' }}">{{ s.tls_label }}</span></div><div class="toolbar"><a class="btn btn-sm" href="/vhosts/edit?file={{ s.file }}">Öffnen</a></div></div>{% else %}<div class="notice">Noch keine Websites eingerichtet. <a href="/sites/new">Erste Website anlegen</a>.</div>{% endfor %}
     </div>
   </section>
-
   <aside class="card col-4">
-    <div class="eyebrow">Quick actions</div>
-    <div class="card-title">Stack</div>
-    <form method="post" action="/compose/action" class="stack" style="margin-top:14px;">
-      <button class="btn btn-primary" name="action" value="up">Start / reconcile</button>
-      <button class="btn" name="action" value="build">Images bauen</button>
-      <button class="btn" name="action" value="pull">Images aktualisieren</button>
-      <button class="btn btn-ghost" name="action" value="recreate">Runtime neu erstellen (UI ausgenommen)</button>
-    </form>
-    <hr>
-    <div class="card-title">Automatisierung</div>
-    <div class="stack" style="margin-top:12px;">
-      <form method="post" action="/certbot/renew"><button class="btn" style="width:100%">Zertifikate erneuern</button></form>
-      <form method="post" action="/dns/run"><button class="btn" style="width:100%">DNS-Updater jetzt ausführen</button></form>
+    <div class="card-header"><div><div class="eyebrow">Aufmerksamkeit</div><div class="card-title">Hinweise & Aufgaben</div></div><span class="badge {{ 'ok' if doctor.ok and not tls_issues else 'warning' }}">{{ doctor.summary.warnings|default(0) + tls_issues|length }} Hinweise</span></div>
+    <div class="stack">
+      {% for s in tls_issues[:3] %}<div class="task"><span class="task-dot error"></span><div><strong><a href="/sites/{{ s.host }}">{{ s.host }}</a>: {{ s.tls_label }}</strong><div class="muted">{% if s.tls_uncovered_hosts %}Nicht abgedeckt: {{ s.tls_uncovered_hosts|join(', ') }}{% else %}Zertifikatszuordnung prüfen{% endif %}</div></div></div>{% endfor %}
+      {% for issue in doctor.issues[:6] %}<div class="task"><span class="task-dot {{ 'error' if issue.severity == 'error' else '' }}"></span><div><strong>{{ issue.code|replace('_',' ')|title }}</strong><div class="muted">{{ issue.message }}</div></div></div>{% else %}<div class="task"><span class="task-dot ok"></span><div><strong>Keine offenen Doctor-Hinweise</strong><div class="muted">Konfiguration und Runtime sehen konsistent aus.</div></div></div>{% endfor %}
     </div>
+    <div style="margin-top:14px"><a class="btn btn-block" href="/health">Systemdetails anzeigen</a></div>
   </aside>
 </div>
-
-<div class="card">
-  <details>
-    <summary><strong>Ersteinrichtung / Betriebsnotizen</strong></summary>
-    <div class="notice" style="margin-top:12px;">
-      Konfiguration, Ports, Domains, SSL und FTP werden zentral unter <a href="/setup">Setup</a> bzw. <a href="/ftp">FTP & Domains</a> gepflegt. Webdaten liegen weiterhin direkt unter <code>{{ project_dir }}/htdocs</code>; MeowHome verwendet dafür keine Docker-Named-Volumes.
-    </div>
-    <pre>docker compose up -d --build
-./tools/meowhome.py doctor
-./tools/backup/backup.sh --with-htdocs</pre>
-  </details>
+<div class="grid" style="margin-top:16px;">
+  <section class="card col-8"><div class="card-header"><div><div class="eyebrow">Runtime</div><div class="card-title">Services</div></div><span class="badge {{ 'ok' if docker_ok and running == containers|length else 'warning' }}">{{ running }}/{{ containers|length }} running</span></div><div class="resource-list">{% for c in containers %}<div class="resource-row"><div class="resource-main"><strong>{{ c.name|replace('meowhome_','') }}</strong><div class="muted">{{ c.image or 'lokales Image' }}</div></div><div class="resource-meta"><span class="badge {{ 'ok' if c.status == 'running' else 'warning' }}">{{ c.status }}</span></div><div class="resource-meta">{{ c.health or '—' }}</div><div><a class="btn btn-sm btn-ghost" href="/container/{{ c.name }}/logs?lines=200">Logs</a></div></div>{% endfor %}</div></section>
+  <aside class="card col-4"><div class="eyebrow">Quick actions</div><div class="card-title">Administration</div><div class="stack" style="margin-top:14px"><a class="btn btn-primary btn-block" href="/sites/new">Neue Website</a><a class="btn btn-block" href="/databases">Datenbank verwalten</a><a class="btn btn-block" href="/ftp">FTP-Benutzer verwalten</a><a class="btn btn-block" href="/backup">Backup erstellen</a></div><hr><div class="muted">Projekt: <code>{{ project_dir }}</code></div></aside>
 </div>
 {% endblock %}

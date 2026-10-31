@@ -14,7 +14,7 @@
     <div class="card-header">
       <div><h3 class="card-title">New FTP user</h3><p class="muted">One domain opens directly in that domain. Multiple domains show only the assigned folders.</p></div>
     </div>
-    <form method="post" action="/ftp/add" class="stack">
+    <form method="post" action="/ftp/add" class="stack"><input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
       <div>
         <label>Username</label>
         <input name="username" autocomplete="off" required placeholder="webmaster">
@@ -59,7 +59,7 @@
             <h3 class="card-title">{{ u.username }}</h3>
             {% if u.enabled %}<span class="badge ok">enabled</span>{% else %}<span class="badge warn">disabled</span>{% endif %}
             {% if u.access_mode == 'all' %}
-              <span class="badge warn">all domains</span>
+              <span class="badge warn">all domains</span><span class="muted">Überprüfen: voller Zugriff auf sämtliche Webroots</span>
             {% elif u.access_mode == 'domains' %}
               <span class="badge">{{ u.domains|length }} assigned domain{% if u.domains|length != 1 %}s{% endif %}</span>
             {% else %}
@@ -80,7 +80,7 @@
 
       <div class="grid">
         <div class="col-8">
-          <form method="post" action="/ftp/access" class="stack">
+          <form method="post" action="/ftp/access" class="stack"><input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
             <input type="hidden" name="username" value="{{ u.username }}">
             <div class="check-grid">
               {% for domain in domains %}
@@ -99,18 +99,18 @@
         </div>
 
         <div class="col-4 stack">
-          <form method="post" action="/ftp/passwd" class="stack">
+          <form method="post" action="/ftp/passwd" class="stack"><input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
             <input type="hidden" name="username" value="{{ u.username }}">
             <div><label>Set new password</label><input type="password" name="password" autocomplete="new-password" required></div>
             <button class="btn" type="submit">Change password</button>
           </form>
           <div class="toolbar">
-            <form method="post" action="/ftp/enable">
+            <form method="post" action="/ftp/enable"><input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
               <input type="hidden" name="username" value="{{ u.username }}">
               <input type="hidden" name="enabled" value="{% if u.enabled %}0{% else %}1{% endif %}">
               <button class="btn" type="submit">{% if u.enabled %}Disable{% else %}Enable{% endif %}</button>
             </form>
-            <form method="post" action="/ftp/del" onsubmit="return confirm('FTP user {{ u.username }} really delete?');">
+            <form method="post" action="/ftp/del" data-item="{{ u.username }}" onsubmit="return confirm('FTP-Benutzer „' + this.dataset.item + '“ wirklich löschen?');"><input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
               <input type="hidden" name="username" value="{{ u.username }}">
               <button class="btn btn-danger" type="submit">Delete</button>
             </form>

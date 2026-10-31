@@ -1,3 +1,4 @@
+import base64
 import os
 import time
 import pathlib
@@ -5,26 +6,38 @@ import re
 import subprocess
 import html as html_lib
 import json
-from typing import Optional, Dict, Any, List, Tuple
 import secrets
+import ssl
+import hashlib
+import fnmatch
+import hmac
+import urllib.error
+import urllib.parse
+import urllib.request
+from datetime import datetime, timezone
+from typing import Optional, Dict, Any, List, Tuple
 
-import docker
-from docker.errors import DockerException, NotFound
-
-from fastapi import FastAPI, Request, Depends, HTTPException, Form
+from fastapi import FastAPI, Request, Depends, HTTPException, Form, File, UploadFile
 from fastapi.templating import Jinja2Templates
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.responses import HTMLResponse, RedirectResponse, FileResponse
+from .domain_tls_health import certificate_details, certificate_covers_hostname, choose_covered_certificate, enrich_sites, site_tls_health
+from .activity import recent_activity
+from .vhost_alias_editor import UnsupportedVhost, plan_alias_edit
 
 
-APP_TITLE = "MeowHome UI"
+APP_TITLE = "MeowHome Control Panel"
 
 PROJECT_DIR = os.getenv("MEOWHOME_PROJECT_DIR", "/meowhome")
 VHOST_DIR = os.path.join(PROJECT_DIR, "apache", "vhosts")
 BACKUPS_DIR = os.path.join(PROJECT_DIR, "backups")
 BACKUP_TOOL = os.path.join(PROJECT_DIR, "tools", "backup", "backup.sh")
-CORE_TOOL = os.path.join(PROJECT_DIR, "tools", "meowhome.py")
 ENV_PATH = os.path.join(PROJECT_DIR, ".env")
+CONTROL_URL = os.getenv("MEOWHOME_CONTROL_URL", "http://control:8765").rstrip("/")
+CONTROL_TOKEN_FILE = os.getenv("MEOWHOME_CONTROL_TOKEN_FILE", "/run/secrets/meowhome-control-token")
+AUDIT_LOG = os.path.join(PROJECT_DIR, "state", "control-audit.jsonl")
+CSRF_COOKIE = "meowhome_csrf"
+CSRF_SECRET = secrets.token_bytes(32)
 
 UI_USER = os.getenv("MEOWHOME_UI_USER", "admin")
 UI_PASS = os.getenv("MEOWHOME_UI_PASS", "admin")
@@ -88,11 +101,73 @@ ALLOWED_CONTAINERS = {
     "meowhome_ui",
 }
 RUNTIME_SERVICES = ["web", "php", "mariadb", "phpmyadmin", "certbot", "dns_updater", "ftp"]
+HOSTNAME_RE = re.compile(r"^(?=.{1,253}$)(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)*[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$")
+DATABASE_NAME_RE = re.compile(r"^[A-Za-z0-9_$-]{1,64}$")
 
 security = HTTPBasic()
 templates = Jinja2Templates(directory=str(pathlib.Path(__file__).parent / "templates"))
 
 app = FastAPI(title=APP_TITLE)
+
+
+def _csrf_cookie_value(request: Request) -> str:
+    value = getattr(request.state, "csrf_cookie", "")
+    if value:
+        return value
+    supplied = request.cookies.get(CSRF_COOKIE, "")
+    if re.fullmatch(r"[A-Za-z0-9_-]{32,128}", supplied or ""):
+        value = supplied
+    else:
+        value = secrets.token_urlsafe(32)
+        request.state.csrf_set_cookie = True
+    request.state.csrf_cookie = value
+    return value
+
+
+def csrf_token_for_request(request: Request) -> str:
+    value = _csrf_cookie_value(request)
+    return hmac.new(CSRF_SECRET, value.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+templates.env.globals["csrf_token"] = csrf_token_for_request
+
+
+@app.middleware("http")
+async def security_headers_and_csrf_cookie(request: Request, call_next):
+    _csrf_cookie_value(request)
+    response = await call_next(request)
+    if getattr(request.state, "csrf_set_cookie", False):
+        response.set_cookie(CSRF_COOKIE, request.state.csrf_cookie, httponly=True, samesite="strict", secure=request.url.scheme == "https", path="/")
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "same-origin")
+    response.headers.setdefault("Cache-Control", "no-store")
+    return response
+
+
+def _same_origin_request(request: Request) -> bool:
+    host = (request.headers.get("host") or "").lower()
+    scheme = (request.url.scheme or "").lower()
+    if not host or scheme not in {"http", "https"}:
+        return False
+    for header in ("origin", "referer"):
+        raw = request.headers.get(header)
+        if not raw:
+            continue
+        try:
+            parsed = urllib.parse.urlsplit(raw)
+        except ValueError:
+            return False
+        return parsed.scheme.lower() == scheme and parsed.netloc.lower() == host
+    return False
+
+
+def require_csrf(request: Request, csrf_token: str = Form(...)) -> None:
+    if not _same_origin_request(request):
+        raise HTTPException(status_code=403, detail="CSRF origin check failed")
+    expected = csrf_token_for_request(request)
+    if not secrets.compare_digest(csrf_token or "", expected):
+        raise HTTPException(status_code=403, detail="CSRF token invalid")
 
 
 def require_auth(creds: HTTPBasicCredentials = Depends(security)) -> str:
@@ -103,36 +178,53 @@ def require_auth(creds: HTTPBasicCredentials = Depends(security)) -> str:
     return creds.username
 
 
-def get_docker_client() -> docker.DockerClient:
+def _control_token() -> str:
     try:
-        return docker.from_env()
-    except DockerException as e:
-        raise HTTPException(status_code=500, detail=f"Docker nicht erreichbar: {e}")
+        value = pathlib.Path(CONTROL_TOKEN_FILE).read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        raise HTTPException(status_code=503, detail=f"Control token unavailable: {exc}") from exc
+    if len(value) < 32:
+        raise HTTPException(status_code=503, detail="Control token is invalid")
+    return value
 
 
-def sh(
-    cmd: List[str],
-    cwd: Optional[str] = None,
-    timeout: int = 120,
-    input_text: Optional[str] = None,
-) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        cmd,
-        cwd=cwd,
-        capture_output=True,
-        text=True,
-        input=input_text,
-        timeout=timeout,
-        check=False,
-    )
+def control_request(method: str, path: str, payload: Optional[Dict[str, Any]] = None, timeout: int = 120) -> Dict[str, Any]:
+    data = None if payload is None else json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(CONTROL_URL + path, data=data, method=method, headers={"Authorization": "Bearer " + _control_token(), "Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as response:
+            result = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        try:
+            result = json.loads(body)
+        except json.JSONDecodeError:
+            result = {"ok": False, "error": body or str(exc)}
+    except (OSError, urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=503, detail=f"MeowHome control adapter unavailable: {exc}") from exc
+    if not isinstance(result, dict):
+        raise HTTPException(status_code=502, detail="Invalid control adapter response")
+    return result
 
 
-def compose(cmd_args: List[str], timeout: int = 300) -> subprocess.CompletedProcess:
-    probe = sh(["docker", "compose", "version"], cwd=PROJECT_DIR, timeout=15)
-    if probe.returncode == 0:
-        return sh(["docker", "compose"] + cmd_args, cwd=PROJECT_DIR, timeout=timeout)
-    return sh(["docker-compose"] + cmd_args, cwd=PROJECT_DIR, timeout=timeout)
+def control_proc(path: str, payload: Optional[Dict[str, Any]] = None, timeout: int = 120) -> subprocess.CompletedProcess:
+    result = control_request("POST", path, payload or {}, timeout=timeout)
+    rc = int(result.get("returncode", 0 if result.get("ok") else 1))
+    return subprocess.CompletedProcess(["control", path], rc, str(result.get("stdout") or ""), str(result.get("stderr") or result.get("error") or ""))
 
+
+def audit_event(actor: str, action: str, target: str, success: bool, detail: str = "") -> None:
+    event = {"ts": datetime.now(timezone.utc).isoformat(), "actor": (actor or "unknown")[:128], "action": (action or "unknown")[:128], "target": (target or "")[:512], "success": bool(success)}
+    # Diagnostic output can contain credentials. Persist only the audit contract;
+    # keep the optional argument for callers without storing its contents.
+    path = pathlib.Path(AUDIT_LOG)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(event, ensure_ascii=False) + "\n")
+        set_host_file_metadata(path, 0o600)
+    except OSError:
+        pass
 
 def render_text_page(title: str, text: str, back_url: str = "/", status_code: int = 200) -> HTMLResponse:
     title_html = html_lib.escape(title)
@@ -295,24 +387,6 @@ def html_autorefresh(
     return resp
 
 
-def container_by_name(dc: docker.DockerClient, name: str):
-    if name not in ALLOWED_CONTAINERS:
-        raise HTTPException(status_code=403, detail="Container ist nicht Teil des MeowHome-Vertrags")
-    try:
-        return dc.containers.get(name)
-    except NotFound:
-        raise HTTPException(status_code=404, detail=f"Container nicht gefunden: {name}")
-
-
-def tail_logs(dc: docker.DockerClient, name: str, lines: int = 200) -> str:
-    c = container_by_name(dc, name)
-    try:
-        data = c.logs(tail=lines)
-        return data.decode("utf-8", errors="replace")
-    except Exception as e:
-        return f"[log error] {e}"
-
-
 def host_uid_gid() -> Optional[Tuple[int, int]]:
     try:
         values: Dict[str, str] = {}
@@ -357,13 +431,10 @@ def backup_file(path: str) -> Optional[str]:
 
 
 def ensure_vhost_control_plane_metadata() -> None:
-    if not os.path.isfile(CORE_TOOL):
-        raise HTTPException(status_code=500, detail=f"MeowHome Core-Tool fehlt: {CORE_TOOL}")
-    res = sh(["python3", CORE_TOOL, "--project", PROJECT_DIR, "repair-control-plane", "--json"], cwd=PROJECT_DIR, timeout=30)
+    res = control_proc("/v1/repair-control-plane", timeout=30)
     if res.returncode != 0:
         detail = (res.stderr or res.stdout or "repair-control-plane failed").strip()
         raise HTTPException(status_code=500, detail=detail)
-
 
 def validate_vhost_managed_dependencies(content: str) -> Optional[str]:
     for match in re.finditer(r"(?mi)^\s*SSLCACertificateFile\s+[\"']?([^\"'\s]+)", content or ""):
@@ -379,61 +450,7 @@ def validate_vhost_managed_dependencies(content: str) -> Optional[str]:
 
 
 def apache_test_and_reload() -> Dict[str, Any]:
-    test = sh(["docker", "exec", "meowhome_apache", "apachectl", "-t"], timeout=30)
-    if test.returncode != 0:
-        return {"ok": False, "step": "apachectl -t", "stdout": test.stdout, "stderr": test.stderr}
-
-    reloadp = sh(["docker", "exec", "meowhome_apache", "apachectl", "-k", "graceful"], timeout=30)
-    if reloadp.returncode != 0:
-        restart = sh(["docker", "restart", "meowhome_apache"], timeout=60)
-        return {
-            "ok": restart.returncode == 0,
-            "step": "docker restart fallback",
-            "stdout": "\n".join(x for x in (reloadp.stdout, restart.stdout) if x),
-            "stderr": "\n".join(x for x in (reloadp.stderr, restart.stderr) if x),
-        }
-
-    return {"ok": True, "step": "apachectl -k graceful", "stdout": reloadp.stdout, "stderr": reloadp.stderr}
-
-
-def list_meowhome_containers(dc: docker.DockerClient) -> List[Dict[str, Any]]:
-    out: List[Dict[str, Any]] = []
-    for c in dc.containers.list(all=True):
-        if c.name not in ALLOWED_CONTAINERS:
-            continue
-        attrs = getattr(c, "attrs", {}) or {}
-        state = (attrs.get("State") or {})
-        health = ""
-        try:
-            health = (state.get("Health") or {}).get("Status", "") or ""
-        except Exception:
-            health = ""
-        image = ""
-        try:
-            image = (getattr(c.image, "tags", None) or [""])[0]
-        except Exception:
-            image = ""
-        started_at = state.get("StartedAt", "") or ""
-        restart_count = attrs.get("RestartCount", "")
-        out.append({
-            "name": c.name,
-            "status": c.status,
-            "health": health,
-            "image": image,
-            "started_at": started_at,
-            "restart_count": restart_count,
-        })
-    out.sort(key=lambda x: x["name"])
-    return out
-
-
-def docker_ok(dc: docker.DockerClient) -> Tuple[bool, str]:
-    try:
-        dc.ping()
-        return True, "ok"
-    except Exception as e:
-        return False, str(e)
-
+    return control_request("POST", "/v1/apache-reload", {}, timeout=90)
 
 def list_backups() -> List[Dict[str, Any]]:
     p = pathlib.Path(BACKUPS_DIR)
@@ -455,11 +472,9 @@ def list_backups() -> List[Dict[str, Any]]:
 
 
 def ensure_backup_tool() -> None:
-    if not os.path.exists(BACKUP_TOOL):
-        raise HTTPException(status_code=500, detail=f"Backup-Tool fehlt: {BACKUP_TOOL}")
-    if not os.access(BACKUP_TOOL, os.X_OK):
-        raise HTTPException(status_code=500, detail=f"Backup-Tool ist nicht ausfuehrbar: chmod +x {BACKUP_TOOL}")
-
+    result = control_request("GET", "/v1/ping", timeout=15)
+    if not result.get("ok"):
+        raise HTTPException(status_code=503, detail="MeowHome control adapter is not ready")
 
 def parse_backup_output_for_path(text: str) -> Optional[str]:
     # Script schreibt: [backup] Fertig: /path/to/file.tar.gz
@@ -611,6 +626,278 @@ def cert_status_for_domains(domains_csv: str) -> List[Dict[str, Any]]:
     return res
 
 
+
+def validate_hostname(value: str, field: str = "Domain") -> str:
+    host = (value or "").strip().lower().rstrip(".")
+    if not HOSTNAME_RE.fullmatch(host):
+        raise HTTPException(status_code=400, detail=f"{field} ist ungueltig: {value}")
+    return host
+
+
+def validate_aliases(value: str) -> List[str]:
+    aliases: List[str] = []
+    for raw in re.split(r"[,\s]+", value or ""):
+        if not raw.strip():
+            continue
+        host = validate_hostname(raw, "Alias")
+        if host not in aliases:
+            aliases.append(host)
+    return aliases
+
+
+def parse_vhost_record(path: pathlib.Path) -> Dict[str, Any]:
+    content = path.read_text(encoding="utf-8", errors="replace")
+    names = re.findall(r"^\s*ServerName\s+([^\s#]+)", content, re.M)
+    alias_lines = re.findall(r"^\s*ServerAlias\s+(.+)$", content, re.M)
+    aliases: List[str] = []
+    for line in alias_lines:
+        aliases.extend(x for x in line.split() if not x.startswith("#"))
+    document = re.search(r"^\s*DocumentRoot\s+([^\s#]+)", content, re.M)
+    proxy = re.search(r'^\s*ProxyPass\s+"?/"?\s+"?(https?://[^"\s]+)', content, re.M | re.I)
+    cert = re.search(r"/etc/letsencrypt/live/([^/]+)/fullchain\.pem", content)
+    host = names[0] if names else ""
+    if proxy:
+        kind = "proxy"
+    elif document:
+        kind = "website"
+    else:
+        kind = "custom"
+    return {
+        "file": path.name,
+        "host": host,
+        "aliases": sorted(set(aliases)),
+        "kind": kind,
+        "document_root": document.group(1) if document else "",
+        "proxy_target": proxy.group(1) if proxy else "",
+        "tls": "<VirtualHost *:443>" in content,
+        "cert_domain": cert.group(1) if cert else "",
+        "php": "php-fpm.conf" in content,
+        "raw": content,
+    }
+
+
+def site_inventory() -> List[Dict[str, Any]]:
+    base = pathlib.Path(VHOST_DIR)
+    if not base.exists():
+        return []
+    sites: List[Dict[str, Any]] = []
+    for path in sorted(base.glob("*.conf")):
+        try:
+            record = parse_vhost_record(path)
+        except OSError:
+            continue
+        if not record.get("host"):
+            continue
+        sites.append(record)
+    return sites
+
+
+def vhost_revision(path: pathlib.Path) -> str:
+    original = pathlib.Path(VHOST_DIR) / path.name
+    if original.is_symlink() or path.is_symlink():
+        raise HTTPException(status_code=409, detail="Symbolische Links werden nicht verändert")
+    if not path.exists(): return "new"
+    if not path.is_file():
+        raise HTTPException(status_code=409, detail="Keine reguläre VHost-Datei")
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def vhost_check_names(content: str, current_file: str = "") -> None:
+    if not content or "\x00" in content or len(content.encode("utf-8")) > 131072:
+        raise HTTPException(status_code=400, detail="VHost darf maximal 128 KiB enthalten")
+    names = re.findall(r"(?mi)^\s*ServerName\s+([^\s#]+)", content)
+    if not names or len({x.lower() for x in names}) != 1:
+        raise HTTPException(status_code=400, detail="Uneindeutiger ServerName")
+    host = validate_hostname(names[0])
+    aliases = re.findall(r"(?mi)^\s*ServerAlias\s+([^\r\n#]+)", content)
+    selected = []
+    wildcards = {x.lower() for line in aliases for x in line.split() if '*' in x or '?' in x}
+    if wildcards:
+        prior = pathlib.Path(VHOST_DIR) / current_file if current_file else None
+        if not prior or not prior.is_file() or prior.is_symlink():
+            raise HTTPException(status_code=400, detail="Neue Wildcards nicht im geführten Editor")
+        prior_names = re.findall(r"(?mi)^\s*ServerAlias\s+([^\r\n#]+)", prior.read_text(encoding="utf-8"))
+        prior_wc = {x.lower() for line in prior_names for x in line.split() if '*' in x or '?' in x}
+        if wildcards != prior_wc:
+            raise HTTPException(status_code=400, detail="Wildcard-Änderungen nur manuell")
+    for line in aliases:
+        for name in line.split():
+            if '*' in name or '?' in name: continue
+            val=validate_hostname(name, "ServerAlias")
+            if val!=host and val not in selected: selected.append(val)
+    site_name_conflicts(host, selected, current_file=current_file)
+
+
+def vhost_apply_transaction(file: str, revision: str, proposed: Optional[str], actor: str, action: str) -> None:
+    if (pathlib.Path(VHOST_DIR) / file).is_symlink():
+        raise HTTPException(status_code=409, detail="VHost-Symlinks sind schreibgeschützt")
+    path=resolve_vhost_file(file)
+    actual=vhost_revision(path)
+    if actual!=revision:
+        raise HTTPException(status_code=409, detail="VHost zwischenzeitlich geändert; bitte neu laden")
+    if proposed is None and actual=="new":
+        raise HTTPException(status_code=404, detail="VHost nicht gefunden")
+    if proposed is not None:
+        vhost_check_names(proposed, current_file=file if actual!="new" else "")
+        dep=validate_vhost_managed_dependencies(proposed)
+        if dep: raise HTTPException(status_code=400, detail=dep)
+    before=path.read_bytes() if actual!="new" else None
+    if before is not None and proposed is not None and before==proposed.encode("utf-8"): return
+    ensure_vhost_control_plane_metadata()
+    if vhost_revision(path)!=revision:
+        raise HTTPException(status_code=409, detail="VHost gleichzeitig geändert")
+    backup=backup_file(str(path)) if before is not None else None
+    if before is not None and (not backup or not pathlib.Path(backup).is_file()):
+        raise HTTPException(status_code=500, detail="VHost-Sicherung fehlgeschlagen")
+    def rollback():
+        try:
+            if before is None: path.unlink(missing_ok=True)
+            else:
+                path.write_bytes(pathlib.Path(backup).read_bytes())
+                set_host_file_metadata(path, 0o664)
+            return bool(apache_test_and_reload().get("ok"))
+        except Exception: return False
+    try:
+        if proposed is None: path.unlink()
+        else: safe_write_file(str(path), proposed, mode=0o664)
+        result=apache_test_and_reload()
+    except Exception:
+        restored=rollback()
+        audit_event(actor,action,file,False)
+        raise HTTPException(status_code=500, detail="Operation fehlgeschlagen; Rückfall: "+("OK" if restored else "FEHLGESCHLAGEN"))
+    if not result.get("ok"):
+        restored=rollback()
+        audit_event(actor,action,file,False)
+        raise HTTPException(status_code=400 if restored else 500,
+                            detail="Apache hat Änderung abgelehnt; Rückfall: "+("OK" if restored else "FEHLGESCHLAGEN"))
+    audit_event(actor,action,file,True)
+
+
+def site_record(host: str) -> Dict[str, Any]:
+    host = validate_hostname(host)
+    for record in site_inventory():
+        if record.get("host") == host:
+            return record
+    raise HTTPException(status_code=404, detail="Website nicht gefunden")
+
+
+def control_get(path: str, params: Dict[str, str], timeout: int = 30) -> Dict[str, Any]:
+    query = urllib.parse.urlencode(params)
+    return control_request("GET", path + ("?" + query if query else ""), timeout=timeout)
+
+
+def certificate_inventory() -> List[Dict[str, Any]]:
+    base = pathlib.Path(PROJECT_DIR) / "letsencrypt" / "live"
+    result: List[Dict[str, Any]] = []
+    if not base.exists():
+        return result
+    for domain_dir in sorted(base.iterdir(), key=lambda p: p.name):
+        if not domain_dir.is_dir():
+            continue
+        fullchain = domain_dir / "fullchain.pem"
+        privkey = domain_dir / "privkey.pem"
+        if not (fullchain.exists() and privkey.exists()):
+            continue
+        details = certificate_details(fullchain)
+        result.append({"domain": domain_dir.name, "exists": True, **details})
+    return result
+
+
+def generate_site_vhost(host: str, aliases: List[str], kind: str, php: bool, proxy_target: str, cert_domain: str) -> str:
+    alias_line = f"    ServerAlias {' '.join(aliases)}\n" if aliases else ""
+    tls = bool(cert_domain)
+    if kind == "website":
+        root = f"/var/www/{host}"
+        body = f"    DocumentRoot {root}\n\n    <Directory {root}>\n        AllowOverride All\n        Require all granted\n    </Directory>\n"
+        if php:
+            body += "\n    Include /etc/apache2/snippets/php-fpm.conf\n"
+    elif kind == "proxy":
+        target = (proxy_target or "").strip()
+        if re.search(r'[\s"\\]', target):
+            raise HTTPException(status_code=400, detail="Reverse-Proxy-Ziel enthaelt ungueltige Zeichen")
+        parsed = urllib.parse.urlsplit(target)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc or parsed.username or parsed.password or parsed.fragment:
+            raise HTTPException(status_code=400, detail="Reverse-Proxy-Ziel muss eine HTTP/HTTPS-URL ohne Zugangsdaten oder Fragment sein")
+        target = target.rstrip("/") + "/"
+        body = f"    ProxyRequests Off\n    ProxyPreserveHost On\n    ProxyPass \"/\" \"{target}\" retry=0 timeout=60\n    ProxyPassReverse \"/\" \"{target}\"\n"
+    else:
+        raise HTTPException(status_code=400, detail="Unbekannter Website-Typ")
+
+    if tls:
+        http_body = f"    Redirect permanent / https://{host}/\n"
+    else:
+        http_body = body
+    conf = f"<VirtualHost *:80>\n    ServerName {host}\n{alias_line}{http_body}</VirtualHost>\n"
+    if tls:
+        conf += f"\n<VirtualHost *:443>\n    ServerName {host}\n{alias_line}\n    Include /etc/apache2/snippets/ssl-common.conf\n    SSLCertificateFile /etc/letsencrypt/live/{cert_domain}/fullchain.pem\n    SSLCertificateKeyFile /etc/letsencrypt/live/{cert_domain}/privkey.pem\n\n{body}</VirtualHost>\n"
+    return conf
+
+
+def site_name_conflicts(host: str, aliases: List[str], current_file: str = "") -> None:
+    """Reject duplicate Apache host identities across all known VHosts."""
+    requested = {host, *aliases}
+    for existing in site_inventory():
+        if existing.get("file") == current_file:
+            continue
+        used = {str(existing.get("host", "")).lower(), *(str(a).lower() for a in existing.get("aliases", []))}
+        conflicts = sorted(name for name in requested if any(
+            name == assigned or (("*" in assigned or "?" in assigned) and fnmatch.fnmatchcase(name, assigned))
+            for assigned in used
+        ))
+        if conflicts:
+            raise HTTPException(status_code=409, detail="Hostname bereits in anderem VHost konfiguriert: " + ", ".join(conflicts))
+
+
+def selected_site_certificate(host: str, aliases: List[str], selection: str, existing: str = "") -> str:
+    """Reuse deployed certificates; never trigger issuance or mutate ACME state."""
+    names = [host, *aliases]
+    if selection == "keep":
+        selected = existing
+    elif selection == "auto":
+        selected = choose_covered_certificate(names, certificate_inventory())
+        if not selected:
+            raise HTTPException(status_code=400, detail="Kein bestehendes gültiges Zertifikat deckt alle Hostnamen ab. Certbot verwaltet die Ausstellung für konfigurierte Zonen; prüfe die SSL/TLS-Seite. Eine DNS-Änderung erfolgt hier nicht.")
+    elif selection == "none":
+        selected = ""
+    else:
+        selected = selection
+    if not selected:
+        return ""
+    valid = {c["domain"]: c for c in certificate_inventory() if c.get("exists")}
+    cert = valid.get(selected)
+    if not cert or cert.get("status") not in {"ok", "warning"}:
+        raise HTTPException(status_code=400, detail="Zertifikat fehlt, ist abgelaufen oder kann nicht geprüft werden")
+    uncovered = [name for name in names if not certificate_covers_hostname(name, cert.get("dns_names") or [])]
+    if uncovered:
+        raise HTTPException(status_code=400, detail="Zertifikat deckt folgende Hostnamen nicht ab: " + ", ".join(uncovered) + ". Wähle ein passendes bestehendes Zertifikat oder prüfe die automatische Ausstellung.")
+    return selected
+
+
+def site_is_generated(record: Dict[str, Any]) -> bool:
+    """Edit only exact generator outputs, never handwritten Apache directives."""
+    host = record.get("host", "")
+    if record.get("kind") not in {"website", "proxy"} or record.get("file") != host + ".conf":
+        return False
+    try:
+        validate_hostname(host)
+        raw = record["raw"]
+        lines = re.findall(r"^\s*ServerAlias\s+(.+)$", raw, flags=re.M)
+        aliases = validate_aliases(lines[0]) if lines else []
+        if host in aliases:
+            return False
+        expected = generate_site_vhost(host, aliases, record["kind"], bool(record["php"]), record["proxy_target"], record["cert_domain"])
+        return expected == raw
+    except (HTTPException, KeyError, ValueError):
+        return False
+
+
+def doctor_snapshot() -> Dict[str, Any]:
+    result = control_request("GET", "/v1/doctor", timeout=30)
+    if not result.get("ok"):
+        return {"ok": False, "issues": [], "summary": {"errors": 1, "warnings": 0}}
+    report = result.get("report")
+    return report if isinstance(report, dict) else {"ok": False, "issues": [], "summary": {"errors": 1, "warnings": 0}}
+
 def mask_value(key: str, value: str) -> str:
     if key in SECRET_KEYS and value:
         return "********"
@@ -619,17 +906,33 @@ def mask_value(key: str, value: str) -> str:
 
 @app.get("/", response_class=HTMLResponse)
 def dashboard(request: Request, user: str = Depends(require_auth)):
-    dc = get_docker_client()
-    ok, msg = docker_ok(dc)
-    containers = list_meowhome_containers(dc)
-
-    return templates.TemplateResponse("dashboard.html", {
+    ping = control_request("GET", "/v1/ping", timeout=15)
+    containers_result = control_request("GET", "/v1/containers", timeout=20)
+    containers = containers_result.get("containers", []) if containers_result.get("ok") else []
+    certs = certificate_inventory()
+    sites = enrich_sites(site_inventory(), certs)
+    databases_result = control_request("GET", "/v1/databases", timeout=20)
+    databases = databases_result.get("databases", []) if databases_result.get("ok") else []
+    try:
+        ftp_users = ftp_state().get("users", [])
+    except Exception:
+        ftp_users = []
+    backups = list_backups()
+    doctor = doctor_snapshot()
+    return templates.TemplateResponse(request, "dashboard.html", {
         "request": request,
         "user": user,
         "containers": containers,
+        "sites": sites,
+        "certs": certs,
+        "tls_issues": [s for s in sites if s["tls_status"] not in {"ok", "warning"}],
+        "databases": databases,
+        "ftp_users": ftp_users,
+        "backups": backups,
+        "doctor": doctor,
         "project_dir": PROJECT_DIR,
-        "docker_ok": ok,
-        "docker_msg": msg,
+        "docker_ok": bool(ping.get("ok")),
+        "docker_msg": ping.get("name") or ping.get("error") or "unavailable",
     })
 
 
@@ -637,31 +940,23 @@ def dashboard(request: Request, user: str = Depends(require_auth)):
 def container_action(
     name: str,
     action: str = Form(...),
-    user: str = Depends(require_auth)
+    user: str = Depends(require_auth),
+    _csrf: None = Depends(require_csrf),
 ):
-    if name == "meowhome_ui":
-        raise HTTPException(status_code=400, detail="Die UI verwaltet ihren eigenen Container nicht; nutze docker compose vom Host.")
-    dc = get_docker_client()
-    c = container_by_name(dc, name)
-
     action = action.strip().lower()
-    if action == "start":
-        c.start()
-    elif action == "stop":
-        c.stop(timeout=20)
-    elif action == "restart":
-        c.restart(timeout=20)
-    else:
-        raise HTTPException(status_code=400, detail="Unknown action")
-
+    result = control_request("POST", "/v1/container-action", {"name": name, "action": action}, timeout=90)
+    audit_event(user, "container_action", f"{name}:{action}", bool(result.get("ok")), str(result.get("error") or ""))
+    if not result.get("ok"):
+        raise HTTPException(status_code=400, detail=result.get("error") or result.get("stderr") or "Container action failed")
     return RedirectResponse(url="/", status_code=303)
 
 
 @app.get("/container/{name}/logs", response_class=HTMLResponse)
 def show_logs(request: Request, name: str, lines: int = 200, user: str = Depends(require_auth)):
-    dc = get_docker_client()
-    text = tail_logs(dc, name, lines=lines)
-    return templates.TemplateResponse("logs.html", {
+    params = urllib.parse.urlencode({"name": name, "lines": min(max(lines, 10), 5000)})
+    result = control_request("GET", "/v1/logs?" + params, timeout=30)
+    text = str(result.get("text") or result.get("error") or "")
+    return templates.TemplateResponse(request, "logs.html", {
         "request": request,
         "user": user,
         "name": name,
@@ -673,24 +968,16 @@ def show_logs(request: Request, name: str, lines: int = 200, user: str = Depends
 @app.post("/compose/action")
 def compose_action(
     action: str = Form(...),
-    user: str = Depends(require_auth)
+    user: str = Depends(require_auth),
+    _csrf: None = Depends(require_csrf),
 ):
     action = action.strip().lower()
-    if action == "up":
-        res = compose(["up", "-d"] + RUNTIME_SERVICES, timeout=600)
-    elif action == "pull":
-        res = compose(["pull"], timeout=600)
-    elif action == "build":
-        res = compose(["build", "--pull"], timeout=900)
-    elif action == "recreate":
-        res = compose(["up", "-d", "--force-recreate"] + RUNTIME_SERVICES, timeout=900)
-    else:
-        raise HTTPException(status_code=400, detail="Unknown compose action")
-
+    result = control_request("POST", "/v1/compose-action", {"action": action}, timeout=900)
+    audit_event(user, "compose_action", action, bool(result.get("ok")), str(result.get("error") or ""))
     return render_text_page(
         "Compose output",
-        f"{res.stdout}\n{res.stderr}",
-        status_code=200 if res.returncode == 0 else 400,
+        f"{result.get('stdout', '')}\n{result.get('stderr', '')}",
+        status_code=200 if result.get("ok") else 400,
     )
 
 
@@ -700,15 +987,14 @@ def compose_action(
 
 @app.get("/health", response_class=HTMLResponse)
 def health_page(request: Request, user: str = Depends(require_auth)):
-    dc = get_docker_client()
-    ok, msg = docker_ok(dc)
-    containers = list_meowhome_containers(dc)
-
-    return templates.TemplateResponse("health.html", {
+    ping = control_request("GET", "/v1/ping", timeout=15)
+    containers_result = control_request("GET", "/v1/containers", timeout=20)
+    containers = containers_result.get("containers", []) if containers_result.get("ok") else []
+    return templates.TemplateResponse(request, "health.html", {
         "request": request,
         "user": user,
-        "docker_ok": ok,
-        "docker_msg": msg,
+        "docker_ok": bool(ping.get("ok")),
+        "docker_msg": ping.get("name") or ping.get("error") or "unavailable",
         "containers": containers,
         "now": time.time(),
     })
@@ -723,7 +1009,7 @@ def health_page(request: Request, user: str = Depends(require_auth)):
 def backup_page(request: Request, user: str = Depends(require_auth)):
     ensure_backup_tool()
     backups = list_backups()
-    return templates.TemplateResponse("backup.html", {
+    return templates.TemplateResponse(request, "backup.html", {
         "request": request,
         "user": user,
         "backups": backups,
@@ -736,16 +1022,15 @@ def backup_page(request: Request, user: str = Depends(require_auth)):
 def backup_create(
     request: Request,
     with_htdocs: Optional[str] = Form(None),
-    user: str = Depends(require_auth)
+    user: str = Depends(require_auth),
+    _csrf: None = Depends(require_csrf),
 ):
     ensure_backup_tool()
     backups_before = {b["name"] for b in list_backups()}
 
-    args = [BACKUP_TOOL]
-    if with_htdocs and with_htdocs.strip().lower() in ("1", "true", "yes", "on"):
-        args.append("--with-htdocs")
-
-    res = sh(args, cwd=PROJECT_DIR, timeout=3600)
+    include_web = bool(with_htdocs and with_htdocs.strip().lower() in ("1", "true", "yes", "on"))
+    res = control_proc("/v1/backup-create", {"with_htdocs": include_web}, timeout=3600)
+    audit_event(user, "backup_create", "with_htdocs" if include_web else "core", res.returncode == 0)
     out = (res.stdout + "\n" + res.stderr).strip()
 
     created_path = parse_backup_output_for_path(out)
@@ -765,7 +1050,7 @@ def backup_create(
 
     # bei Fehlern: Ausgabe anzeigen
     if res.returncode != 0 or not created_file:
-        return templates.TemplateResponse("backup.html", {
+        return templates.TemplateResponse(request, "backup.html", {
             "request": request,
             "user": user,
             "backups": backups,
@@ -773,7 +1058,7 @@ def backup_create(
             "last_file": "",
         })
 
-    return templates.TemplateResponse("backup.html", {
+    return templates.TemplateResponse(request, "backup.html", {
         "request": request,
         "user": user,
         "backups": backups,
@@ -817,7 +1102,7 @@ def setup_page(request: Request, user: str = Depends(require_auth)):
     domains_csv = env.get("DOMAINS", "")
     certs = cert_status_for_domains(domains_csv) if domains_csv else []
 
-    return templates.TemplateResponse("setup.html", {
+    return templates.TemplateResponse(request, "setup.html", {
         "request": request,
         "user": user,
         "env": view,
@@ -830,6 +1115,7 @@ def setup_page(request: Request, user: str = Depends(require_auth)):
 def setup_save(
     request: Request,
     user: str = Depends(require_auth),
+    _csrf: None = Depends(require_csrf),
 
     # Network / published ports
     HTTP_BIND: str = Form("0.0.0.0"),
@@ -939,8 +1225,9 @@ def setup_save(
         view[k] = mask_value(k, env_after.get(k, ""))
 
     certs = cert_status_for_domains(env_after.get("DOMAINS", ""))
+    audit_event(user, "setup_save", "configuration", True)
 
-    return templates.TemplateResponse("setup.html", {
+    return templates.TemplateResponse(request, "setup.html", {
         "request": request,
         "user": user,
         "env": view,
@@ -956,16 +1243,8 @@ def setup_save(
 # FTP User Management (core owner: tools/ftp/meowftp.py + ftp/users.sqlite)
 # ----------------------------
 
-def meowftp_py() -> str:
-    p = os.path.join(PROJECT_DIR, "tools", "ftp", "meowftp.py")
-    if not os.path.exists(p):
-        raise HTTPException(status_code=500, detail=f"meowftp.py nicht gefunden: {p}")
-    return p
-
-
 def ftp_run(args: List[str], *, timeout: int = 60, input_text: Optional[str] = None) -> subprocess.CompletedProcess:
-    return sh(["python3", meowftp_py()] + args, cwd=PROJECT_DIR, timeout=timeout, input_text=input_text)
-
+    return control_proc("/v1/ftp", {"args": args, "input": input_text}, timeout=timeout)
 
 def ftp_state() -> Dict[str, Any]:
     res = ftp_run(["list", "--json"], timeout=60)
@@ -994,7 +1273,7 @@ def ftp_apply_or_error(prefix: str, result: subprocess.CompletedProcess) -> Opti
 @app.get("/ftp", response_class=HTMLResponse)
 def ftp_page(request: Request, user: str = Depends(require_auth)):
     state = ftp_state()
-    resp = templates.TemplateResponse("ftp.html", {
+    resp = templates.TemplateResponse(request, "ftp.html", {
         "request": request,
         "user": user,
         "users": state.get("users", []),
@@ -1013,6 +1292,7 @@ def ftp_add(
     domains: Optional[List[str]] = Form(None),
     allow_all: Optional[str] = Form(None),
     user: str = Depends(require_auth),
+    _csrf: None = Depends(require_csrf),
 ):
     username = username.strip()
     selected = [d.strip() for d in (domains or []) if d.strip()]
@@ -1049,7 +1329,9 @@ def ftp_add(
 
     error = ftp_apply_or_error("=== access ===", access_result)
     if error:
+        audit_event(user, "ftp_add", username, False)
         return error
+    audit_event(user, "ftp_add", username, True)
     return RedirectResponse(url="/ftp", status_code=303)
 
 
@@ -1059,6 +1341,7 @@ def ftp_access(
     domains: Optional[List[str]] = Form(None),
     allow_all: Optional[str] = Form(None),
     user: str = Depends(require_auth),
+    _csrf: None = Depends(require_csrf),
 ):
     username = username.strip()
     selected = [d.strip() for d in (domains or []) if d.strip()]
@@ -1075,7 +1358,9 @@ def ftp_access(
         raise HTTPException(status_code=400, detail="Mindestens eine Domain auswaehlen")
     error = ftp_apply_or_error("=== access ===", res)
     if error:
+        audit_event(user, "ftp_access", username, False)
         return error
+    audit_event(user, "ftp_access", username, True)
     return RedirectResponse(url="/ftp", status_code=303)
 
 
@@ -1084,6 +1369,7 @@ def ftp_passwd(
     username: str = Form(...),
     password: str = Form(...),
     user: str = Depends(require_auth),
+    _csrf: None = Depends(require_csrf),
 ):
     username = username.strip()
     if not FTP_USERNAME_RE.fullmatch(username):
@@ -1093,19 +1379,23 @@ def ftp_passwd(
     res = ftp_run(["passwd", username, "--password-stdin"], input_text=password + "\n")
     error = ftp_apply_or_error("=== passwd ===", res)
     if error:
+        audit_event(user, "ftp_passwd", username, False)
         return error
+    audit_event(user, "ftp_passwd", username, True)
     return RedirectResponse(url="/ftp", status_code=303)
 
 
 @app.post("/ftp/del")
-def ftp_del(username: str = Form(...), user: str = Depends(require_auth)):
+def ftp_del(username: str = Form(...), user: str = Depends(require_auth), _csrf: None = Depends(require_csrf)):
     username = username.strip()
     if not FTP_USERNAME_RE.fullmatch(username):
         raise HTTPException(status_code=400, detail="ungueltiger FTP username")
     res = ftp_run(["del", username])
     error = ftp_apply_or_error("=== delete ===", res)
     if error:
+        audit_event(user, "ftp_del", username, False)
         return error
+    audit_event(user, "ftp_del", username, True)
     return RedirectResponse(url="/ftp", status_code=303)
 
 
@@ -1114,6 +1404,7 @@ def ftp_enable(
     username: str = Form(...),
     enabled: str = Form(...),
     user: str = Depends(require_auth),
+    _csrf: None = Depends(require_csrf),
 ):
     username = username.strip()
     if not FTP_USERNAME_RE.fullmatch(username):
@@ -1122,8 +1413,443 @@ def ftp_enable(
     res = ftp_run([cmd, username])
     error = ftp_apply_or_error(f"=== {cmd} ===", res)
     if error:
+        audit_event(user, "ftp_enable", username, False)
         return error
+    audit_event(user, "ftp_enable", username, True)
     return RedirectResponse(url="/ftp", status_code=303)
+
+
+
+# ----------------------------
+# Websites & Domains
+# ----------------------------
+
+@app.get("/sites", response_class=HTMLResponse)
+def sites_page(request: Request, user: str = Depends(require_auth)):
+    certs = certificate_inventory()
+    return templates.TemplateResponse(request, "sites.html", {
+        "request": request,
+        "user": user,
+        "sites": enrich_sites(site_inventory(), certs),
+        "certs": certs,
+    })
+
+
+@app.get("/sites/new", response_class=HTMLResponse)
+def site_new_page(request: Request, user: str = Depends(require_auth)):
+    return templates.TemplateResponse(request, "site_new.html", {
+        "request": request,
+        "user": user,
+        "certs": [c for c in certificate_inventory() if c.get("status") in {"ok", "warning"}],
+    })
+
+
+@app.post("/sites/create")
+def site_create(
+    host: str = Form(...),
+    aliases: str = Form(""),
+    kind: str = Form("website"),
+    proxy_target: str = Form(""),
+    cert_domain: str = Form("auto"),
+    php: Optional[str] = Form(None),
+    create_index: Optional[str] = Form(None),
+    user: str = Depends(require_auth),
+    _csrf: None = Depends(require_csrf),
+):
+    host = validate_hostname(host)
+    alias_list = [a for a in validate_aliases(aliases) if a != host]
+    kind = (kind or "website").strip().lower()
+    cert_domain = (cert_domain or "").strip()
+    site_name_conflicts(host, alias_list)
+    cert_domain = selected_site_certificate(host, alias_list, "none" if cert_domain == "" else cert_domain)
+    file_name = host + ".conf"
+    path = resolve_vhost_file(file_name)
+    if path.exists():
+        raise HTTPException(status_code=409, detail="Fuer diese Domain existiert bereits ein VHost")
+    content = generate_site_vhost(host, alias_list, kind, bool(php), proxy_target, cert_domain)
+    if kind == "website":
+        result = control_request("POST", "/v1/webroot-ensure", {"host": host, "create_index": bool(create_index)}, timeout=30)
+        if not result.get("ok"):
+            raise HTTPException(status_code=400, detail=result.get("error") or "Webroot konnte nicht erstellt werden")
+    vhost_apply_transaction(file_name, "new", content, user, "site_create")
+    return RedirectResponse(url=f"/sites/{host}", status_code=303)
+
+
+def _alias_site_state(host: str) -> Tuple[Dict[str, Any], pathlib.Path, bytes]:
+    site = site_record(host)
+    if len([s for s in site_inventory() if s.get("host", "").lower() == host.lower()]) != 1:
+        raise HTTPException(status_code=409, detail="Hauptdomain ist mehrfach konfiguriert")
+    path = resolve_vhost_file(site["file"])
+    if (pathlib.Path(VHOST_DIR) / site["file"]).is_symlink() or not path.is_file():
+        raise HTTPException(status_code=409, detail="Keine reguläre VHost-Datei")
+    return site, path, path.read_bytes()
+
+
+def _alias_site_plan(host: str, aliases: str, revision: str) -> Tuple[Dict[str, Any], pathlib.Path, Any]:
+    site, path, before = _alias_site_state(host)
+    if not re.fullmatch(r"[a-f0-9]{64}", revision) or hashlib.sha256(before).hexdigest() != revision:
+        raise HTTPException(status_code=409, detail="VHost zwischenzeitlich geändert; Seite neu laden")
+    try:
+        raw = before.decode("utf-8")
+    except UnicodeDecodeError:
+        raise HTTPException(status_code=409, detail="VHost ist nicht UTF-8-kodiert")
+    wanted = [a for a in validate_aliases(aliases) if a != site["host"].lower()]
+    try:
+        plan = plan_alias_edit(raw, site["host"], wanted)
+    except UnsupportedVhost as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    site_name_conflicts(site["host"].lower(), wanted, current_file=site["file"])
+    if site["tls"]:
+        if not site["cert_domain"]:
+            raise HTTPException(status_code=409, detail="TLS-Zertifikat nicht eindeutig erkannt; Advanced VHost verwenden")
+        selected_site_certificate(site["host"].lower(), wanted, "keep", site["cert_domain"])
+    return site, path, plan
+
+
+@app.get("/sites/{host}/aliases", response_class=HTMLResponse)
+def site_aliases_page(request: Request, host: str, user: str = Depends(require_auth)):
+    site, path, before = _alias_site_state(host)
+    try:
+        proposal = plan_alias_edit(before.decode("utf-8"), site["host"], [str(a).lower() for a in site["aliases"]])
+        editable, reason = True, ""
+        shown = ", ".join(proposal.aliases)
+    except (UnicodeDecodeError, UnsupportedVhost) as exc:
+        editable, reason = False, str(exc)
+        shown = ", ".join(site["aliases"])
+    return templates.TemplateResponse(request, "site_aliases.html", {
+        "request": request, "user": user, "site": site, "editable": editable,
+        "reason": reason, "aliases": shown,
+        "revision": hashlib.sha256(before).hexdigest(),
+    })
+
+
+@app.post("/sites/{host}/aliases/preview", response_class=HTMLResponse)
+def site_aliases_preview(request: Request, host: str, revision: str = Form(...), aliases: str = Form(""),
+                         user: str = Depends(require_auth), _csrf: None = Depends(require_csrf)):
+    site, path, plan = _alias_site_plan(host, aliases, revision)
+    return templates.TemplateResponse(request, "site_aliases_preview.html", {
+        "request": request, "user": user, "site": site,
+        "revision": revision, "aliases": ", ".join(plan.aliases), "diff": plan.diff,
+        "changed": plan.before != plan.after,
+    })
+
+
+@app.post("/sites/{host}/aliases/apply")
+def site_aliases_apply(host: str, revision: str = Form(...), aliases: str = Form(""),
+                       user: str = Depends(require_auth), _csrf: None = Depends(require_csrf)):
+    site, path, plan = _alias_site_plan(host, aliases, revision)
+    if plan.before == plan.after:
+        return RedirectResponse(url=f"/sites/{host}", status_code=303)
+    ensure_vhost_control_plane_metadata()
+    if hashlib.sha256(path.read_bytes()).hexdigest() != revision:
+        raise HTTPException(status_code=409, detail="VHost während der Freigabe geändert")
+    dependency_error = validate_vhost_managed_dependencies(plan.after)
+    if dependency_error:
+        raise HTTPException(status_code=400, detail=dependency_error)
+    bak = backup_file(str(path))
+    if not bak:
+        raise HTTPException(status_code=500, detail="Sicherung der VHost-Konfiguration fehlgeschlagen")
+    try:
+        safe_write_file(str(path), plan.after, mode=0o664)
+        result = apache_test_and_reload()
+    except Exception:
+        safe_write_file(str(path), pathlib.Path(bak).read_text(encoding="utf-8"), mode=0o664)
+        apache_test_and_reload()
+        audit_event(user, "site_aliases_apply", host, False)
+        raise
+    if not result.get("ok"):
+        safe_write_file(str(path), pathlib.Path(bak).read_text(encoding="utf-8"), mode=0o664)
+        rollback = apache_test_and_reload()
+        audit_event(user, "site_aliases_apply", host, False)
+        message = "Apache hat die Änderung abgelehnt; vorherige Datei wiederhergestellt."
+        if not rollback.get("ok"):
+            message += " WARNUNG: Apache-Rollback fehlgeschlagen; bitte sofort prüfen."
+        return render_text_page("Aliases nicht gespeichert", message,
+                                back_url=f"/sites/{host}/aliases", status_code=400)
+    audit_event(user, "site_aliases_apply", host, True)
+    return RedirectResponse(url=f"/sites/{host}", status_code=303)
+
+
+@app.get("/sites/{host}/settings", response_class=HTMLResponse)
+def site_settings(request: Request, host: str, user: str = Depends(require_auth)):
+    site = site_record(host)
+    if not site_is_generated(site):
+        raise HTTPException(status_code=409, detail="Benutzerdefinierten VHost nur über den Advanced-Editor bearbeiten")
+    path = resolve_vhost_file(site["file"])
+    return templates.TemplateResponse(request, "site_settings.html", {
+        "request": request, "user": user, "site": site,
+        "revision": hashlib.sha256(path.read_bytes()).hexdigest(),
+        "certs": [c for c in certificate_inventory() if c.get("status") in {"ok", "warning"}],
+    })
+
+
+@app.post("/sites/{host}/settings")
+def site_settings_save(
+    host: str,
+    revision: str = Form(...),
+    aliases: str = Form(""),
+    php: Optional[str] = Form(None),
+    proxy_target: str = Form(""),
+    cert_domain: str = Form("keep"),
+    user: str = Depends(require_auth),
+    _csrf: None = Depends(require_csrf),
+):
+    site = site_record(host)
+    if not site_is_generated(site):
+        raise HTTPException(status_code=409, detail="VHost wurde individuell angepasst; bitte Advanced VHost verwenden")
+    path = resolve_vhost_file(site["file"])
+    if not re.fullmatch(r"[a-f0-9]{64}", revision) or hashlib.sha256(path.read_bytes()).hexdigest() != revision:
+        raise HTTPException(status_code=409, detail="VHost wurde zwischenzeitlich geändert. Seite neu laden.")
+    host = site["host"]
+    alias_list = [a for a in validate_aliases(aliases) if a != host]
+    site_name_conflicts(host, alias_list, current_file=site["file"])
+    kind = site["kind"]
+    cert = selected_site_certificate(host, alias_list, (cert_domain or "keep").strip(), site["cert_domain"])
+    content = generate_site_vhost(host, alias_list, kind, bool(php) if kind == "website" else False,
+                                  proxy_target if kind == "proxy" else "", cert)
+    if content == site["raw"]:
+        return RedirectResponse(url=f"/sites/{host}", status_code=303)
+    ensure_vhost_control_plane_metadata()
+    if hashlib.sha256(path.read_bytes()).hexdigest() != revision:
+        raise HTTPException(status_code=409, detail="VHost wurde während der Änderung aktualisiert. Seite neu laden.")
+    dependency_error = validate_vhost_managed_dependencies(content)
+    if dependency_error:
+        raise HTTPException(status_code=400, detail=dependency_error)
+    bak = backup_file(str(path))
+    try:
+        safe_write_file(str(path), content, mode=0o664)
+        result = apache_test_and_reload()
+    except Exception:
+        if bak:
+            safe_write_file(str(path), pathlib.Path(bak).read_text(encoding="utf-8"), mode=0o664)
+            apache_test_and_reload()
+        raise
+    if not result.get("ok"):
+        if bak:
+            safe_write_file(str(path), pathlib.Path(bak).read_text(encoding="utf-8"), mode=0o664)
+            rollback = apache_test_and_reload()
+        else:
+            rollback = {"ok": False}
+        audit_event(user, "site_settings_save", host, False)
+        detail = "Apache hat die neue Konfiguration abgelehnt. Vorherige Datei wiederhergestellt."
+        if not rollback.get("ok"):
+            detail += " ACHTUNG: Apache-Rollback-Reload fehlgeschlagen; bitte sofort prüfen."
+        return render_text_page("Website-Einstellungen nicht gespeichert", detail, back_url=f"/sites/{host}/settings", status_code=400)
+    audit_event(user, "site_settings_save", host, True)
+    return RedirectResponse(url=f"/sites/{host}", status_code=303)
+
+
+@app.get("/sites/{host}", response_class=HTMLResponse)
+def site_detail(request: Request, host: str, user: str = Depends(require_auth)):
+    site = site_record(host)
+    certs = certificate_inventory()
+    site = site_tls_health(site, certs)
+    cert = site.get("tls_cert")
+    file_manager = site.get("kind") == "website"
+    return templates.TemplateResponse(request, "site_detail.html", {
+        "request": request, "user": user, "site": site, "cert": cert, "file_manager": file_manager,
+        "settings_editable": site_is_generated(site),
+    })
+
+
+@app.get("/sites/{host}/files", response_class=HTMLResponse)
+def site_files(request: Request, host: str, path: str = "", user: str = Depends(require_auth)):
+    site = site_record(host)
+    if site.get("kind") != "website":
+        raise HTTPException(status_code=400, detail="File Manager ist nur fuer Websites mit Webroot verfuegbar")
+    result = control_get("/v1/files", {"host": host, "path": path}, timeout=30)
+    if not result.get("ok"):
+        raise HTTPException(status_code=400, detail=result.get("error") or "Dateien konnten nicht geladen werden")
+    return templates.TemplateResponse(request, "file_manager.html", {
+        "request": request, "user": user, "site": site, "listing": result,
+    })
+
+
+@app.get("/sites/{host}/files/edit", response_class=HTMLResponse)
+def site_file_edit(request: Request, host: str, path: str, user: str = Depends(require_auth)):
+    site = site_record(host)
+    if site.get("kind") != "website":
+        raise HTTPException(status_code=400, detail="File Manager ist nur fuer Websites verfuegbar")
+    result = control_get("/v1/file-read", {"host": host, "path": path}, timeout=30)
+    if not result.get("ok"):
+        raise HTTPException(status_code=400, detail=result.get("error") or "Datei konnte nicht gelesen werden")
+    return templates.TemplateResponse(request, "file_edit.html", {"user": user, "site": site, "file": result})
+
+
+@app.post("/sites/{host}/files/save")
+def site_file_save(host: str, path: str = Form(...), content: str = Form(""), user: str = Depends(require_auth), _csrf: None = Depends(require_csrf)):
+    site_record(host)
+    result = control_request("POST", "/v1/file-write", {"host": host, "path": path, "content": content}, timeout=30)
+    audit_event(user, "file_write", f"{host}/{path}", bool(result.get("ok")), str(result.get("error") or ""))
+    if not result.get("ok"):
+        raise HTTPException(status_code=400, detail=result.get("error") or "Datei konnte nicht gespeichert werden")
+    parent = str(pathlib.PurePosixPath(path).parent)
+    parent = "" if parent == "." else parent
+    return RedirectResponse(url=f"/sites/{host}/files?path={urllib.parse.quote(parent)}", status_code=303)
+
+
+@app.post("/sites/{host}/files/mkdir")
+def site_file_mkdir(host: str, directory: str = Form(""), name: str = Form(...), user: str = Depends(require_auth), _csrf: None = Depends(require_csrf)):
+    site_record(host)
+    result = control_request("POST", "/v1/file-mkdir", {"host": host, "directory": directory, "name": name}, timeout=30)
+    audit_event(user, "file_mkdir", f"{host}/{directory}/{name}", bool(result.get("ok")), str(result.get("error") or ""))
+    if not result.get("ok"):
+        raise HTTPException(status_code=400, detail=result.get("error") or "Ordner konnte nicht erstellt werden")
+    return RedirectResponse(url=f"/sites/{host}/files?path={urllib.parse.quote(directory)}", status_code=303)
+
+
+@app.post("/sites/{host}/files/upload")
+def site_file_upload(host: str, directory: str = Form(""), overwrite: Optional[str] = Form(None), upload: UploadFile = File(...), user: str = Depends(require_auth), _csrf: None = Depends(require_csrf)):
+    site_record(host)
+    data = upload.file.read(8 * 1024 * 1024 + 1)
+    if len(data) > 8 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="Upload ist auf 8 MiB pro Datei begrenzt")
+    result = control_request("POST", "/v1/file-upload", {"host": host, "directory": directory, "name": upload.filename or "", "data": base64.b64encode(data).decode("ascii"), "overwrite": bool(overwrite)}, timeout=60)
+    audit_event(user, "file_upload", f"{host}/{directory}/{upload.filename or ''}", bool(result.get("ok")), str(result.get("error") or ""))
+    if not result.get("ok"):
+        raise HTTPException(status_code=400, detail=result.get("error") or "Upload fehlgeschlagen")
+    return RedirectResponse(url=f"/sites/{host}/files?path={urllib.parse.quote(directory)}", status_code=303)
+
+
+@app.post("/sites/{host}/files/delete")
+def site_file_delete(host: str, path: str = Form(...), directory: str = Form(""), user: str = Depends(require_auth), _csrf: None = Depends(require_csrf)):
+    site_record(host)
+    result = control_request("POST", "/v1/file-delete", {"host": host, "path": path}, timeout=30)
+    audit_event(user, "file_delete", f"{host}/{path}", bool(result.get("ok")), str(result.get("error") or ""))
+    if not result.get("ok"):
+        raise HTTPException(status_code=400, detail=result.get("error") or "Datei/Ordner konnte nicht geloescht werden")
+    return RedirectResponse(url=f"/sites/{host}/files?path={urllib.parse.quote(directory)}", status_code=303)
+
+
+# ----------------------------
+# SSL/TLS
+# ----------------------------
+
+@app.get("/certificates", response_class=HTMLResponse)
+def certificates_page(request: Request, user: str = Depends(require_auth)):
+    env = env_parse(env_read_raw())
+    certs = certificate_inventory()
+    sites = enrich_sites(site_inventory(), certs)
+    containers = control_request("GET", "/v1/containers", timeout=20)
+    certbot_running = any(
+        c.get("name") == "meowhome_certbot" and c.get("status") == "running"
+        for c in containers.get("containers", [])
+    )
+    return templates.TemplateResponse(request, "certificates.html", {
+        "request": request,
+        "user": user,
+        "certs": certs,
+        "sites": sites,
+        "problem_count": sum(s["tls_status"] not in {"ok", "warning"} for s in sites),
+        "challenge": env.get("ACME_CHALLENGE", ""),
+        "provider": env.get("DNS_PROVIDER", ""),
+        "email": env.get("LE_EMAIL", ""),
+        "certbot_enabled": env.get("CERTBOT_ENABLED", "true").lower() == "true",
+        "certbot_running": certbot_running,
+    })
+
+
+@app.get("/activity", response_class=HTMLResponse)
+def activity_page(request: Request, user: str = Depends(require_auth)):
+    return templates.TemplateResponse(request, "activity.html", {
+        "request": request, "user": user,
+        "events": recent_activity(pathlib.Path(AUDIT_LOG)),
+    })
+
+
+@app.get("/dns", response_class=HTMLResponse)
+def dns_page(request: Request, user: str = Depends(require_auth)):
+    env = env_parse(env_read_raw())
+    zones = [d.strip() for d in env.get("DOMAINS", "").split(",") if d.strip()]
+    containers = control_request("GET", "/v1/containers", timeout=20)
+    updater_running = any(
+        c.get("name") == "meowhome_dns_updater" and c.get("status") == "running"
+        for c in containers.get("containers", [])
+    )
+    return templates.TemplateResponse(request, "dns.html", {
+        "request": request,
+        "user": user,
+        "zones": zones,
+        "provider": env.get("DNS_PROVIDER", ""),
+        "challenge": env.get("ACME_CHALLENGE", ""),
+        "updater_enabled": env.get("DNS_UPDATER_ENABLED", "true").lower() == "true",
+        "updater_running": updater_running,
+    })
+
+
+# ----------------------------
+# Databases
+# ----------------------------
+
+@app.get("/databases", response_class=HTMLResponse)
+def databases_page(request: Request, user: str = Depends(require_auth)):
+    result = control_request("GET", "/v1/databases", timeout=20)
+    users_result = control_request("GET", "/v1/database-users", timeout=20)
+    users_by_db: Dict[str, List[Dict[str, Any]]] = {}
+    if users_result.get("ok"):
+        for row in users_result.get("users", []):
+            users_by_db.setdefault(str(row.get("database", "")), []).append(row)
+    env = env_parse(env_read_raw())
+    return templates.TemplateResponse(request, "databases.html", {
+        "request": request,
+        "user": user,
+        "databases": result.get("databases", []) if result.get("ok") else [],
+        "users_by_db": users_by_db,
+        "db_error": "" if result.get("ok") else (result.get("error") or result.get("stderr") or ""),
+        "users_error": "" if users_result.get("ok") else (users_result.get("error") or users_result.get("stderr") or ""),
+        "pma_bind": env.get("PHPMYADMIN_BIND", "127.0.0.1"),
+        "pma_port": env.get("PHPMYADMIN_PORT", "8080"),
+    })
+
+
+@app.post("/databases/create")
+def database_create(name: str = Form(...), user: str = Depends(require_auth), _csrf: None = Depends(require_csrf)):
+    name = (name or "").strip()
+    if not DATABASE_NAME_RE.fullmatch(name):
+        raise HTTPException(status_code=400, detail="Datenbankname darf nur A-Z, a-z, 0-9, _, $, - enthalten")
+    result = control_request("POST", "/v1/database-create", {"name": name}, timeout=30)
+    audit_event(user, "database_create", name, bool(result.get("ok")), str(result.get("error") or ""))
+    if not result.get("ok"):
+        raise HTTPException(status_code=400, detail=result.get("error") or result.get("stderr") or "Datenbank konnte nicht erstellt werden")
+    return RedirectResponse(url="/databases", status_code=303)
+
+
+@app.post("/databases/drop")
+def database_drop(name: str = Form(...), user: str = Depends(require_auth), _csrf: None = Depends(require_csrf)):
+    name = (name or "").strip()
+    if not DATABASE_NAME_RE.fullmatch(name):
+        raise HTTPException(status_code=400, detail="Ungueltiger Datenbankname")
+    result = control_request("POST", "/v1/database-drop", {"name": name}, timeout=30)
+    audit_event(user, "database_drop", name, bool(result.get("ok")), str(result.get("error") or ""))
+    if not result.get("ok"):
+        raise HTTPException(status_code=400, detail=result.get("error") or result.get("stderr") or "Datenbank konnte nicht geloescht werden")
+    return RedirectResponse(url="/databases", status_code=303)
+
+
+@app.post("/databases/user-create")
+def database_user_create(database: str = Form(...), username: str = Form(...), user: str = Depends(require_auth), _csrf: None = Depends(require_csrf)):
+    database = (database or "").strip()
+    username = (username or "").strip()
+    if not DATABASE_NAME_RE.fullmatch(database) or not re.fullmatch(r"[A-Za-z0-9_$-]{1,32}", username):
+        raise HTTPException(status_code=400, detail="Ungueltiger Datenbank- oder Benutzername")
+    password = secrets.token_urlsafe(24)
+    result = control_request("POST", "/v1/database-user-create", {"database": database, "user": username, "password": password}, timeout=30)
+    audit_event(user, "database_user_create", f"{username}@{database}", bool(result.get("ok")), str(result.get("error") or ""))
+    if not result.get("ok"):
+        raise HTTPException(status_code=400, detail=result.get("error") or result.get("stderr") or "Datenbankbenutzer konnte nicht erstellt werden")
+    return render_text_page("Datenbankbenutzer erstellt", f"Benutzer: {username}\nDatenbank: {database}\nPasswort: {password}\n\nDas Passwort wird nur jetzt angezeigt. Bitte sicher speichern.", back_url="/databases")
+
+
+@app.post("/databases/user-drop")
+def database_user_drop(username: str = Form(...), user: str = Depends(require_auth), _csrf: None = Depends(require_csrf)):
+    username = (username or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9_$-]{1,32}", username):
+        raise HTTPException(status_code=400, detail="Ungueltiger Datenbankbenutzer")
+    result = control_request("POST", "/v1/database-user-drop", {"user": username}, timeout=30)
+    audit_event(user, "database_user_drop", username, bool(result.get("ok")), str(result.get("error") or ""))
+    if not result.get("ok"):
+        raise HTTPException(status_code=400, detail=result.get("error") or result.get("stderr") or "Datenbankbenutzer konnte nicht geloescht werden")
+    return RedirectResponse(url="/databases", status_code=303)
 
 
 # ----------------------------
@@ -1133,119 +1859,90 @@ def ftp_enable(
 @app.get("/vhosts", response_class=HTMLResponse)
 def vhosts(request: Request, user: str = Depends(require_auth)):
     ensure_vhost_control_plane_metadata()
-    p = pathlib.Path(VHOST_DIR)
-    files = []
-    if p.exists():
-        for f in p.glob("*.conf"):
-            files.append(f.name)
-    files.sort()
-    return templates.TemplateResponse("vhosts.html", {
-        "request": request,
-        "user": user,
-        "files": files,
-    })
+    files=[]
+    for path in sorted(pathlib.Path(VHOST_DIR).glob("*.conf")):
+        if path.is_file() and not path.is_symlink():
+            content=path.read_text(encoding="utf-8",errors="replace")
+            files.append({"name":path.name,"managed":bool(re.search(r"(?mi)^\s*ServerName\s+",content))})
+    return templates.TemplateResponse(request,"vhosts.html",{"user":user,"files":files})
 
 
-@app.get("/vhosts/edit", response_class=HTMLResponse)
-def vhosts_edit(request: Request, file: str, user: str = Depends(require_auth)):
-    ensure_vhost_control_plane_metadata()
-    file = file.strip()
-    full_path = resolve_vhost_file(file)
+@app.get("/vhosts/new",response_class=HTMLResponse)
+def vhosts_new(request:Request,user:str=Depends(require_auth)):
+    return templates.TemplateResponse(request,"vhosts_new.html",{"user":user})
 
-    content = ""
-    if full_path.exists():
-        content = full_path.read_text(encoding="utf-8", errors="replace")
-    return templates.TemplateResponse("vhosts_edit.html", {
-        "request": request,
-        "user": user,
-        "file": file,
-        "content": content,
-    })
+
+@app.get("/vhosts/edit",response_class=HTMLResponse)
+def vhosts_edit(request:Request,file:str,user:str=Depends(require_auth)):
+    file=file.strip()
+    if (pathlib.Path(VHOST_DIR)/file).is_symlink():
+        raise HTTPException(status_code=409,detail="VHost-Link nicht bearbeitbar")
+    path=resolve_vhost_file(file)
+    revision=vhost_revision(path)
+    content=path.read_text(encoding="utf-8") if revision!="new" else ""
+    return templates.TemplateResponse(request,"vhosts_edit.html",{"user":user,
+        "file":file,"revision":revision,"content":content})
+
+
+def vhost_preview_context(file:str,content:str,revision:str)->Dict[str,Any]:
+    import difflib
+    file=file.strip()
+    if (pathlib.Path(VHOST_DIR)/file).is_symlink():
+        raise HTTPException(status_code=409,detail="VHost-Link nicht bearbeitbar")
+    path=resolve_vhost_file(file)
+    if vhost_revision(path)!=revision:
+        raise HTTPException(status_code=409,detail="VHost zwischenzeitlich geändert")
+    vhost_check_names(content,current_file=file if revision!="new" else "")
+    dep=validate_vhost_managed_dependencies(content)
+    if dep:raise HTTPException(status_code=400,detail=dep)
+    before=path.read_text(encoding="utf-8") if revision!="new" else ""
+    diff="".join(difflib.unified_diff(before.splitlines(keepends=True),content.splitlines(keepends=True),
+                                     fromfile="Aktuell",tofile="Vorschlag",n=3))
+    return {"file":file,"revision":revision,"content":content,"changed":before!=content,"diff":diff}
+
+
+@app.post("/vhosts/preview",response_class=HTMLResponse)
+def vhosts_preview(request:Request,file:str=Form(...),content:str=Form(...),revision:str=Form(...),
+                   user:str=Depends(require_auth),_csrf:None=Depends(require_csrf)):
+    details=vhost_preview_context(file,content,revision)
+    return templates.TemplateResponse(request,"vhosts_preview.html",{"user":user,**details})
 
 
 @app.post("/vhosts/save")
-def vhosts_save(
-    file: str = Form(...),
-    content: str = Form(...),
-    user: str = Depends(require_auth)
-):
-    ensure_vhost_control_plane_metadata()
-    file = file.strip()
-    full_path = resolve_vhost_file(file)
+def vhosts_save(file:str=Form(...),content:str=Form(...),revision:str=Form(...),
+                user:str=Depends(require_auth),_csrf:None=Depends(require_csrf)):
+    vhost_apply_transaction(file.strip(),revision,content,user,"vhost_save")
+    return RedirectResponse(url="/vhosts",status_code=303)
 
-    dependency_error = validate_vhost_managed_dependencies(content)
-    if dependency_error:
-        return render_text_page(
-            "VHost dependency missing",
-            dependency_error + "\n\nRun the current MeowHome installer/upgrade before enabling that directive.",
-            back_url=f"/vhosts/edit?file={file}",
-            status_code=400,
-        )
 
-    full = str(full_path)
-    bak = backup_file(full)
-    safe_write_file(full, content, mode=0o664)
-
-    result = apache_test_and_reload()
-    if not result.get("ok"):
-        if bak and os.path.exists(bak):
-            pathlib.Path(full).write_bytes(pathlib.Path(bak).read_bytes())
-            set_host_file_metadata(pathlib.Path(full), 0o664)
-        details = "\n".join([
-            "Apache config test failed. Changes were rolled back.",
-            "",
-            result.get("stdout", ""),
-            result.get("stderr", ""),
-        ]).strip()
-        return render_text_page("VHost save failed", details, back_url="/vhosts", status_code=400)
-
-    return RedirectResponse(url="/vhosts", status_code=303)
+@app.get("/vhosts/delete",response_class=HTMLResponse)
+def vhosts_delete_page(request:Request,file:str,user:str=Depends(require_auth)):
+    file=file.strip()
+    if (pathlib.Path(VHOST_DIR)/file).is_symlink():
+        raise HTTPException(status_code=409,detail="VHost-Link nicht bearbeitbar")
+    path=resolve_vhost_file(file)
+    rev=vhost_revision(path)
+    if rev=="new":raise HTTPException(status_code=404,detail="VHost nicht gefunden")
+    raw=path.read_text(encoding="utf-8")
+    names=re.findall(r"(?mi)^\s*ServerName\s+([^\s#]+)",raw)
+    if not names:raise HTTPException(status_code=409,detail="System-Hilfskonfiguration bleibt geschützt")
+    return templates.TemplateResponse(request,"vhosts_delete.html",{"user":user,
+             "file":file,"revision":rev,"servers":sorted(set(names))})
 
 
 @app.post("/vhosts/delete")
-def vhosts_delete(
-    file: str = Form(...),
-    user: str = Depends(require_auth)
-):
-    ensure_vhost_control_plane_metadata()
-    file = file.strip()
-    full_path = resolve_vhost_file(file)
-
-    if not full_path.exists():
-        return render_text_page(
-            "VHost delete failed",
-            f"Datei nicht gefunden: {file}",
-            back_url="/vhosts",
-            status_code=404
-        )
-
-    full = str(full_path)
-    bak = backup_file(full)
-
-    try:
-        full_path.unlink()
-    except OSError as e:
-        return render_text_page(
-            "VHost delete failed",
-            f"Datei konnte nicht geloescht werden: {e}",
-            back_url="/vhosts",
-            status_code=400
-        )
-
-    result = apache_test_and_reload()
-    if not result.get("ok"):
-        if bak and os.path.exists(bak):
-            pathlib.Path(full).write_bytes(pathlib.Path(bak).read_bytes())
-            set_host_file_metadata(pathlib.Path(full), 0o664)
-        details = "\n".join([
-            "Apache config test failed. Deletion was rolled back.",
-            "",
-            result.get("stdout", ""),
-            result.get("stderr", ""),
-        ]).strip()
-        return render_text_page("VHost delete failed", details, back_url="/vhosts", status_code=400)
-
-    return RedirectResponse(url="/vhosts", status_code=303)
+def vhosts_delete(file:str=Form(...),revision:str=Form(...),confirm:str=Form(...),
+                  user:str=Depends(require_auth),_csrf:None=Depends(require_csrf)):
+    file=file.strip()
+    if confirm.strip()!=file:raise HTTPException(status_code=400,detail="Dateiname stimmt nicht überein")
+    if (pathlib.Path(VHOST_DIR)/file).is_symlink():
+        raise HTTPException(status_code=409,detail="VHost-Link nicht löschbar")
+    path=resolve_vhost_file(file)
+    if vhost_revision(path)=="new":raise HTTPException(status_code=404,detail="VHost nicht gefunden")
+    if not re.search(r"(?mi)^\s*ServerName\s+",path.read_text(encoding="utf-8")):
+        raise HTTPException(status_code=409,detail="Hilfskonfiguration geschützt")
+    vhost_apply_transaction(file,revision,None,user,"vhost_delete")
+    return RedirectResponse(url="/vhosts",status_code=303)
 
 
 # ----------------------------
@@ -1253,27 +1950,20 @@ def vhosts_delete(
 # ----------------------------
 
 @app.post("/certbot/renew")
-def certbot_renew(user: str = Depends(require_auth)):
-    res = sh(["docker", "exec", "meowhome_certbot", "certbot", "renew", "--non-interactive"], timeout=180)
-    text = (res.stdout + "\n" + res.stderr).strip()
-    if res.returncode != 0:
-        return render_text_page("Certbot renew failed", text, status_code=400)
-
-    reload_result = apache_test_and_reload()
-    if not reload_result.get("ok"):
-        details = "\n".join([
-            text,
-            "",
-            "Certificate renewal completed, but Apache reload failed.",
-            reload_result.get("stdout", ""),
-            reload_result.get("stderr", ""),
-        ]).strip()
-        return render_text_page("Certbot renew warning", details, status_code=500)
-    return render_text_page("Certbot renew output", text or "Renew completed; Apache reloaded.")
+def certbot_renew(user: str = Depends(require_auth), _csrf: None = Depends(require_csrf)):
+    result = control_request("POST", "/v1/certbot-renew", {}, timeout=300)
+    text = (str(result.get("stdout") or "") + "\n" + str(result.get("stderr") or "")).strip()
+    audit_event(user, "certbot_renew", "certificates", bool(result.get("ok")), str(result.get("error") or ""))
+    return render_text_page(
+        "Certbot renew output",
+        text or ("Renew completed; Apache reloaded." if result.get("ok") else "Renew failed."),
+        status_code=200 if result.get("ok") else 400,
+    )
 
 
 @app.post("/dns/run")
-def dns_run(user: str = Depends(require_auth)):
-    res = sh(["docker", "restart", "meowhome_dns_updater"], timeout=60)
-    text = (res.stdout + "\n" + res.stderr).strip()
-    return render_text_page("DNS updater output", text)
+def dns_run(user: str = Depends(require_auth), _csrf: None = Depends(require_csrf)):
+    result = control_request("POST", "/v1/dns-run", {}, timeout=90)
+    text = (str(result.get("stdout") or "") + "\n" + str(result.get("stderr") or "")).strip()
+    audit_event(user, "dns_run", "dns_updater", bool(result.get("ok")), str(result.get("error") or ""))
+    return render_text_page("DNS updater output", text, status_code=200 if result.get("ok") else 400)

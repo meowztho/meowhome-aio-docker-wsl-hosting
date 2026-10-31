@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-header"><div><div class="eyebrow">Provisioning</div><h1>Website oder Proxy erstellen</h1><p class="muted">Erzeugt einen validierten Apache-VHost. Für Spezialkonfigurationen bleibt der Raw-Editor verfügbar.</p></div><a class="btn" href="/sites">Abbrechen</a></div>
+<form method="post" action="/sites/create" class="grid"><input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+  <section class="card col-8">
+    <div class="card-header"><div><div class="eyebrow">Identity</div><div class="card-title">Domain & Hosting-Typ</div></div></div>
+    <div class="grid"><div class="field col-6"><label>Domain / Hostname</label><input name="host" required placeholder="www.example.com"><span class="field-help">Wird ServerName und standardmäßig auch der Webroot-Name.</span></div><div class="field col-6"><label>Aliases</label><input name="aliases" placeholder="example.com, alias.example.com"><span class="field-help">Komma oder Leerzeichen getrennt.</span></div></div>
+    <div class="field"><label>Hosting-Typ</label><select name="kind" id="kind"><option value="website">Website / Webroot</option><option value="proxy">Reverse Proxy</option></select></div>
+    <div id="website-options" class="stack"><label class="check-item"><input type="checkbox" name="php" value="true" checked> PHP-FPM aktivieren</label><label class="check-item"><input type="checkbox" name="create_index" value="true" checked> einfache Startseite erzeugen, falls keine index.html existiert</label></div>
+    <div id="proxy-options" class="field"><label>Proxy-Ziel</label><input name="proxy_target" placeholder="http://service:8000"><span class="field-help">HTTP/HTTPS-Ziel ohne eingebettete Zugangsdaten. Docker-Service, LAN-IP oder anderer erreichbarer Host.</span></div>
+  </section>
+  <aside class="card col-4"><div class="eyebrow">TLS</div><div class="card-title">HTTPS-Zertifikat</div><div class="field" style="margin-top:14px"><label>Zertifikat verwenden</label><select name="cert_domain"><option value="auto" selected>Automatisch passendes Zertifikat wählen (empfohlen)</option><option value="">Noch kein HTTPS (nur HTTP)</option>{% for c in certs %}<option value="{{ c.domain }}">{{ c.domain }}{% if c.expires_at %} · bis {{ c.expires_at }}{% endif %}</option>{% endfor %}</select><span class="field-help">MeowHome wählt ein vorhandenes passendes Zertifikat automatisch anhand der DNS-Namen. Ausstellung und Erneuerung übernimmt weiterhin der bestehende Certbot-Dienst.</span></div><div class="notice">Mit Zertifikat wird HTTP automatisch auf HTTPS umgeleitet. Ohne Zertifikat bleibt Port 80 aktiv.</div></aside>
+  <div class="col-12 toolbar"><button class="btn btn-primary" type="submit">Website erstellen</button><a class="btn" href="/sites">Abbrechen</a></div>
+</form>
+{% endblock %}

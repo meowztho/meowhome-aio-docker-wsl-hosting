@@ -106,29 +106,50 @@ cat /etc/pam.d/vsftpd_virtual
 HOST_UID="${PUID:-${FTP_HOST_UID:-1000}}"
 HOST_GID="${PGID:-${FTP_HOST_GID:-1000}}"
 
-if getent group ftp >/dev/null 2>&1; then
-  CUR_GID="$(getent group ftp | awk -F: '{print $3}')"
-  if [ "$CUR_GID" != "$HOST_GID" ]; then
-    groupmod -g "$HOST_GID" ftp 2>/dev/null || true
+fail() {
+  echo "[FTP] ERROR: $*" >&2
+  exit 1
+}
+
+case "$HOST_UID" in
+  ''|*[!0-9]*) fail "PUID must be a numeric user ID." ;;
+esac
+case "$HOST_GID" in
+  ''|*[!0-9]*) fail "PGID must be a numeric group ID." ;;
+esac
+
+if TARGET_USER_RECORD="$(getent passwd "$HOST_UID")"; then
+  TARGET_USERNAME="${TARGET_USER_RECORD%%:*}"
+  if [ "$TARGET_USERNAME" != "ftp" ]; then
+    fail "PUID $HOST_UID already belongs to account '$TARGET_USERNAME'; cannot map FTP user safely."
   fi
-else
-  groupadd -g "$HOST_GID" ftp 2>/dev/null || groupadd ftp 2>/dev/null || true
+fi
+
+# Reuse an existing host GID when one is present. Only move the ftp group when
+# the desired GID is currently unused; groupmod must never silently fall back.
+if ! getent group "$HOST_GID" >/dev/null 2>&1; then
+  if getent group ftp >/dev/null 2>&1; then
+    groupmod -g "$HOST_GID" ftp 2>/dev/null || fail "could not set ftp group to PGID $HOST_GID."
+  else
+    groupadd -g "$HOST_GID" ftp 2>/dev/null || fail "could not create ftp group with PGID $HOST_GID."
+  fi
 fi
 
 if id ftp >/dev/null 2>&1; then
   CUR_UID="$(id -u ftp)"
-  CUR_GID="$(id -g ftp)"
   if [ "$CUR_UID" != "$HOST_UID" ]; then
-    usermod -u "$HOST_UID" ftp 2>/dev/null || true
+    usermod -u "$HOST_UID" ftp 2>/dev/null || fail "could not set ftp user to PUID $HOST_UID."
   fi
-  if [ "$CUR_GID" != "$HOST_GID" ]; then
-    usermod -g "$HOST_GID" ftp 2>/dev/null || true
-  fi
+  usermod -g "$HOST_GID" ftp 2>/dev/null || fail "could not set ftp primary group to PGID $HOST_GID."
 else
-  useradd -m -u "$HOST_UID" -g "$HOST_GID" -d /var/www -s /usr/sbin/nologin ftp 2>/dev/null || true
+  useradd -m -u "$HOST_UID" -g "$HOST_GID" -d /var/www -s /usr/sbin/nologin ftp 2>/dev/null || fail "could not create ftp user with PUID:PGID $HOST_UID:$HOST_GID."
 fi
 
-echo "[FTP] ftp user mapped to ${HOST_UID}:${HOST_GID}"
+ACTUAL_UID="$(id -u ftp)"
+ACTUAL_GID="$(id -g ftp)"
+[ "$ACTUAL_UID" = "$HOST_UID" ] || fail "ftp UID is $ACTUAL_UID after mapping; expected PUID $HOST_UID."
+[ "$ACTUAL_GID" = "$HOST_GID" ] || fail "ftp GID is $ACTUAL_GID after mapping; expected PGID $HOST_GID."
+echo "[FTP] ftp user mapped to ${ACTUAL_UID}:${ACTUAL_GID}"
 
 echo "[FTP] Waiting for users.db..."
 for i in $(seq 1 30); do

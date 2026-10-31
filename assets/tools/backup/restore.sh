@@ -32,9 +32,9 @@ compose() {
 }
 
 read_env_value() {
-  local key="$1" value=""
-  [[ -f "${PROJECT_DIR}/.env" ]] || return 0
-  value="$(grep -E "^${key}=" "${PROJECT_DIR}/.env" | tail -n1 | cut -d= -f2- || true)"
+  local key="$1" env_file="${2:-${PROJECT_DIR}/.env}" value=""
+  [[ -f "${env_file}" ]] || return 0
+  value="$(grep -E "^${key}=" "${env_file}" | tail -n1 | cut -d= -f2- || true)"
   if [[ ${#value} -ge 2 ]]; then
     if [[ "${value:0:1}" == '"' && "${value: -1}" == '"' ]] || [[ "${value:0:1}" == "'" && "${value: -1}" == "'" ]]; then
       value="${value:1:${#value}-2}"
@@ -98,6 +98,60 @@ with tarfile.open(archive, "r:gz") as tf:
 PY
 }
 
+validate_restore_paths() {
+  local root="$1" label="$2" require_runtime="$3"
+  python3 - "$root" "$label" "$require_runtime" <<'PY'
+import pathlib, stat, sys
+
+root = pathlib.Path(sys.argv[1])
+label = sys.argv[2]
+require_runtime = sys.argv[3] == "yes"
+required_files = {".env", "docker-compose.yml"}
+sensitive_files = required_files | {
+    "control/control.token", "control/certbot.token",
+    "ftp/users.sqlite", "ftp/ssl/vsftpd.pem",
+}
+protected_dirs = {"control", "ftp", "ftp/ssl"}
+
+def reject(path, reason):
+    raise SystemExit(f"ERROR: unsafe {label} path {path}: {reason}")
+
+for rel in sorted(sensitive_files):
+    path = root / rel
+    # Check each protected ancestor without following links.
+    for parent_rel in pathlib.PurePosixPath(rel).parents:
+        if str(parent_rel) == ".":
+            continue
+        parent = root / str(parent_rel)
+        try:
+            st = parent.lstat()
+        except FileNotFoundError:
+            continue
+        if stat.S_ISLNK(st.st_mode) or not stat.S_ISDIR(st.st_mode):
+            reject(parent_rel, "ancestor must be a real directory")
+
+    try:
+        st = path.lstat()
+    except FileNotFoundError:
+        if require_runtime and rel in required_files:
+            reject(rel, "required runtime file is missing")
+        continue
+    if stat.S_ISLNK(st.st_mode) or not stat.S_ISREG(st.st_mode):
+        reject(rel, "must be a regular file, not a symlink or special file")
+    if rel in sensitive_files and st.st_nlink != 1:
+        reject(rel, "must not have multiple hard links")
+
+for rel in protected_dirs:
+    path = root / rel
+    try:
+        st = path.lstat()
+    except FileNotFoundError:
+        continue
+    if stat.S_ISLNK(st.st_mode) or not stat.S_ISDIR(st.st_mode):
+        reject(rel, "must be a real directory")
+PY
+}
+
 TMP="$(mktemp -d)"
 cleanup() { rm -rf "${TMP}"; }
 trap cleanup EXIT
@@ -125,6 +179,68 @@ if [[ ! -f "${PROJECT_SOURCE}/docker-compose.yml" || ! -f "${PROJECT_SOURCE}/.en
   echo "ERROR: Projektbackup enthaelt keine vollstaendige Runtime (.env/docker-compose.yml)." >&2
   exit 1
 fi
+validate_restore_paths "${PROJECT_SOURCE}" "backup" yes
+
+# The combined vsftpd PEM is generated state and intentionally excluded from
+# backups. Rebuild it in the extracted staging tree before touching the target
+# project or stopping its running services.
+FTP_TLS="$(read_env_value FTP_TLS "${PROJECT_SOURCE}/.env" | tr '[:lower:]' '[:upper:]')"
+if [[ "${FTP_TLS}" == "YES" || "${FTP_TLS}" == "TRUE" || "${FTP_TLS}" == "1" || "${FTP_TLS}" == "ON" ]]; then
+  # Use the current validator even when restoring an older archive whose
+  # bundled builder merely concatenated files without validating the key pair.
+  PEM_BUILDER="${SCRIPT_DIR}/../../ftp/build-ftps-pem.sh"
+  if [[ ! -f "${PEM_BUILDER}" ]]; then
+    echo "ERROR: FTPS ist aktiviert, aber der aktuelle PEM-Builder fehlt." >&2
+    exit 1
+  fi
+  echo "[restore] FTPS-Zertifikat und Schluessel vorab pruefen..."
+  if ! MEOWHOME_PROJECT_DIR="${PROJECT_SOURCE}" bash "${PEM_BUILDER}"; then
+    echo "ERROR: FTPS-PEM konnte aus dem Backup nicht erzeugt werden; Zielprojekt blieb unveraendert." >&2
+    exit 1
+  fi
+  if [[ ! -s "${PROJECT_SOURCE}/ftp/ssl/vsftpd.pem" ]]; then
+    echo "ERROR: FTPS-PEM wurde nicht erzeugt; Zielprojekt blieb unveraendert." >&2
+    exit 1
+  fi
+fi
+
+# Existing destinations can contain links left by prior projects. Check them
+# before stopping services or overlay-copying the archive.
+validate_restore_paths "${PROJECT_DIR}" "target" no
+
+# GNU tar follows existing destination directory links. Inspect every webroot
+# destination before stopping services, including nested paths and hard links.
+if [[ -f "${TMP}/htdocs.tar.gz" ]]; then
+  python3 - "${TMP}/htdocs.tar.gz" "${PROJECT_DIR}" "${PROJECT_SOURCE}" <<'PY'
+import os, pathlib, stat, sys, tarfile
+
+for root_arg in sys.argv[2:]:
+    root = pathlib.Path(root_arg)
+    with tarfile.open(sys.argv[1], "r:gz") as archive:
+        for member in archive:
+            parts = pathlib.PurePosixPath(member.name).parts
+            if not parts or parts[0] != "htdocs":
+                raise SystemExit("ERROR: webroot archive contains a path outside htdocs")
+            path = root
+            for index, part in enumerate(parts):
+                path = path / part
+                try:
+                    metadata = path.lstat()
+                except FileNotFoundError:
+                    continue
+                leaf = index == len(parts) - 1
+                # An unchanged leaf symlink is safe to restore as a link. Never
+                # traverse it to restore a descendant or replace it with a file.
+                same_link = (leaf and member.issym() and stat.S_ISLNK(metadata.st_mode)
+                             and os.readlink(path) == member.linkname)
+                if stat.S_ISLNK(metadata.st_mode) and not same_link:
+                    raise SystemExit(f"ERROR: unsafe webroot restore target: {path.relative_to(root)} is a symlink")
+                if not leaf and not stat.S_ISDIR(metadata.st_mode):
+                    raise SystemExit(f"ERROR: unsafe webroot restore ancestor: {path.relative_to(root)}")
+                if leaf and stat.S_ISREG(metadata.st_mode) and metadata.st_nlink != 1:
+                    raise SystemExit(f"ERROR: unsafe webroot restore target: {path.relative_to(root)} has hard links")
+PY
+fi
 
 if [[ -f "${PROJECT_DIR}/docker-compose.yml" ]]; then
   echo "[restore] Bestehenden Stack stoppen..."
@@ -136,6 +252,19 @@ fi
 echo "[restore] Projektfiles zurueckspielen (overlay; keine impliziten Loeschungen)..."
 cp -a "${PROJECT_SOURCE}/." "${PROJECT_DIR}/"
 cd "${PROJECT_DIR}"
+
+# Restored archives can carry permissive historical modes. Normalize only
+# credential/configuration files; never recurse into or chown user web content.
+chmod 600 "${PROJECT_DIR}/.env"
+if [[ -d "${PROJECT_DIR}/control" ]]; then
+  chmod 700 "${PROJECT_DIR}/control"
+  for token_file in "${PROJECT_DIR}/control/control.token" "${PROJECT_DIR}/control/certbot.token"; do
+    [[ ! -f "${token_file}" ]] || chmod 600 "${token_file}"
+  done
+fi
+if [[ -f "${PROJECT_DIR}/ftp/users.sqlite" ]]; then
+  chmod 600 "${PROJECT_DIR}/ftp/users.sqlite"
+fi
 
 # Location-specific runtime metadata must follow the restore destination.
 # All user configuration remains untouched.
@@ -155,7 +284,9 @@ compose up -d mariadb
 echo "[restore] Warte auf MariaDB..."
 ready=0
 for i in {1..60}; do
-  if docker exec -e "MYSQL_PWD=${DB_ROOT_PASSWORD}" meowhome_db mariadb-admin ping -uroot --silent >/dev/null 2>&1; then
+  # ping can succeed even on access denied. TCP also excludes the temporary
+  # socket-only server used while a fresh MariaDB data directory initializes.
+  if docker exec -e "MYSQL_PWD=${DB_ROOT_PASSWORD}" meowhome_db mariadb --protocol=tcp -h127.0.0.1 -uroot -Nse 'SELECT 1' >/dev/null 2>&1; then
     ready=1
     echo "[restore] MariaDB ready."
     break

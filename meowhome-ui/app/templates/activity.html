@@ -1,0 +1,8 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-header"><div><div class="eyebrow">System · Audit</div><h1>Aktivitäten</h1><p class="muted">Die letzten protokollierten Verwaltungsaktionen. Ohne Geheimnisse und interne Fehlerdetails.</p></div><a class="btn" href="/health">Zu den Services</a></div>
+<div class="card"><div class="card-header"><div class="card-title">Änderungsverlauf</div><span class="badge">{{ events|length }} Einträge</span></div><table><thead><tr><th>Zeitpunkt (UTC)</th><th>Aktion</th><th>Ziel</th><th>Benutzer</th><th>Ergebnis</th></tr></thead><tbody>
+{% for e in events %}<tr><td>{{ e.ts }}</td><td><strong>{{ e.action }}</strong></td><td><code>{{ e.target }}</code></td><td>{{ e.actor }}</td><td><span class="badge {{ 'ok' if e.success else 'error' }}">{{ 'Erfolgreich' if e.success else 'Fehlgeschlagen' }}</span></td></tr>{% else %}<tr><td colspan="5" class="muted">Noch keine Aktionen protokolliert.</td></tr>{% endfor %}
+</tbody></table></div>
+<div class="notice" style="margin-top:16px">Diese Ansicht erfasst nur bereits protokollierte MeowHome-Aktionen. Sie ist kein vollständiges Systemlog. Rohdetails erscheinen bewusst nicht im Browser.</div>
+{% endblock %}

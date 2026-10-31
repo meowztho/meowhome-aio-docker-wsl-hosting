@@ -1,0 +1,5 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-header"><div><div class="eyebrow">Vorschau</div><h1>{{ file }}</h1><p class="muted">Kontrolliere das Diff vor der Übernahme.</p></div><a class="btn" href="/vhosts">Abbrechen</a></div>
+<section class="card"><div class="card-title">Konfigurationsänderungen</div>{% if changed %}<pre style="white-space:pre-wrap;overflow-wrap:anywhere">{{ diff }}</pre><form method="post" action="/vhosts/save"><input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}"><input type="hidden" name="file" value="{{ file }}"><input type="hidden" name="revision" value="{{ revision }}"><textarea name="content" hidden>{{ content }}</textarea><div class="toolbar"><button class="btn btn-primary" type="submit">Änderung übernehmen</button><a class="btn" href="/vhosts/edit?file={{ file|urlencode }}">Bearbeiten</a></div></form>{% else %}<p class="muted">Keine Änderungen nötig.</p>{% endif %}</section>
+{% endblock %}

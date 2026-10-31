@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-header">
+  <div><div class="eyebrow">Website</div><h1>{{ site.host }}</h1><p class="muted">Hosting, TLS und Inhalte dieser Domain an einem Ort.</p></div>
+  <div class="toolbar"><a class="btn" href="/sites">Zurück</a>{% if settings_editable %}<a class="btn btn-primary" href="/sites/{{ site.host }}/settings">Hosting-Einstellungen</a>{% endif %}<a class="btn" href="/sites/{{ site.host }}/aliases">Domain-Aliases</a><a class="btn" href="/vhosts/edit?file={{ site.file }}">Advanced VHost</a><a class="btn btn-danger" href="/vhosts/delete?file={{ site.file|urlencode }}">VHost entfernen</a>{% if file_manager %}<a class="btn btn-primary" href="/sites/{{ site.host }}/files">Dateien</a>{% endif %}</div>
+</div>
+<div class="grid">
+  <section class="card col-8">
+    <div class="card-header"><div><div class="card-title">Hosting</div><p class="muted">Erkannte Runtime-Konfiguration aus Apache.</p></div><span class="badge {{ 'ok' if site.tls_status == 'ok' else 'warning' if site.tls_status == 'warning' else 'error' }}">{{ site.tls_label }}</span></div>
+    <div class="resource-list">
+      <div class="resource-row"><div class="resource-main"><strong>Typ</strong></div><div class="resource-meta">{{ 'Website' if site.kind == 'website' else ('Reverse Proxy' if site.kind == 'proxy' else 'Custom') }}</div></div>
+      {% if site.kind == 'website' %}<div class="resource-row"><div class="resource-main"><strong>Document Root</strong></div><div class="resource-meta"><code>{{ site.document_root }}</code></div></div>{% endif %}
+      {% if site.kind == 'proxy' %}<div class="resource-row"><div class="resource-main"><strong>Backend</strong></div><div class="resource-meta"><code>{{ site.proxy_target }}</code></div></div>{% endif %}
+      <div class="resource-row"><div class="resource-main"><strong>Aliases</strong></div><div class="resource-meta">{{ site.aliases|join(', ') if site.aliases else 'keine' }}</div></div>
+      <div class="resource-row"><div class="resource-main"><strong>PHP</strong></div><div class="resource-meta">{{ 'aktiv' if site.php else 'nicht erkannt' }}</div></div>
+    </div>
+  </section>
+  <aside class="card col-4">
+    <div class="eyebrow">SSL/TLS</div><div class="card-title">Zertifikat</div>
+    {% if site.cert_domain %}<p><strong>{{ site.cert_domain }}</strong></p>{% if cert %}<p class="muted">{{ site.tls_label }}{% if cert.expires_at %} – gültig bis {{ cert.expires_at }} ({{ cert.days_left }} Tage){% endif %}</p>{% else %}<div class="notice warning">Referenziertes Zertifikat fehlt.</div>{% endif %}{% else %}<div class="notice warning">Kein Zertifikat im VHost erkannt.</div>{% endif %}
+    {% if site.tls_uncovered_hosts %}<div class="notice warning">Zertifikat deckt folgende Hostnamen nicht ab: {{ site.tls_uncovered_hosts|join(', ') }}</div>{% endif %}
+    <hr>
+    <div class="card-title">Schnellaktionen</div>
+    <div class="stack" style="margin-top:12px"><a class="btn" href="https://{{ site.host }}" target="_blank" rel="noopener">Website öffnen</a>{% if file_manager %}<a class="btn" href="/sites/{{ site.host }}/files">File Manager</a>{% endif %}<a class="btn" href="/certificates">SSL/TLS</a></div>
+  </aside>
+</div>
+{% if not settings_editable %}<div class="notice warning" style="margin-top:16px">Der VHost enthält eine individuelle oder nicht eindeutig generierte Konfiguration. MeowHome zeigt sie an; Änderungen erfolgen ausschließlich im Advanced-Editor.</div>{% endif %}
+{% endblock %}

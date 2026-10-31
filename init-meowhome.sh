@@ -3,7 +3,7 @@ set -euo pipefail
 
 # ============================================================
 # MeowHome Bootstrapper (Core + Tools + FTP Virtual Users)
-# Version: 2.6.2 (Apache control-plane ownership + AOP asset hardening)
+# Version: 2.9.6 (resource-oriented hosting control panel)
 # - erstellt ~/meowhome komplett
 # - Tools unter ./tools (modular erweiterbar)
 # - FTP: vsftpd Virtual Users + Tool (SQLite auf Host)
@@ -23,9 +23,68 @@ set -euo pipefail
 # ============================================================
 
 PROJECT_DIR="${1:-$HOME/meowhome}"
-HOST_UID="${SUDO_UID:-$(id -u)}"
-HOST_GID="${SUDO_GID:-$(id -g)}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Validate the complete installer package before touching the destination. The
+# runtime depends on these sources being present together; a partial checkout
+# must not leave a half-upgraded installation behind.
+REQUIRED_SOURCES=(
+  AGENTS.md ARCHITECTURE.md CHANGELOG.md VERSION
+  assets/tools/warmup.sh assets/tools/backup/restore.sh assets/tools/backup/backup.sh
+  assets/tools/permissions_hardening.sh assets/tools/meowhome.py
+  assets/root/.gitignore assets/root/.env.example
+  assets/htdocs/example.com/index.php
+  assets/apache/snippets/php-fpm.conf assets/apache/snippets/ssl-common.conf
+  assets/apache/snippets/cf-safe-redirect.conf assets/apache/snippets/cloudflare-origin-pull-ca.pem
+  assets/apache/vhosts/10-example.conf assets/apache/vhosts/20-templates.conf
+  assets/ftp/Dockerfile assets/ftp/entrypoint.sh assets/ftp/build-ftps-pem.sh
+  assets/tools/ftp/meowftp.py assets/tools/ftp/debug-ftp.sh assets/tools/ftp/fix-permissions.sh
+  assets/root/docker-compose.yml assets/web/Dockerfile assets/php/Dockerfile assets/php/custom.ini
+  assets/certbot/Dockerfile assets/certbot/run.sh assets/dns-updater/Dockerfile assets/dns-updater/run.sh
+  meowhome-control/Dockerfile meowhome-control/server.py
+)
+for source in "${REQUIRED_SOURCES[@]}"; do
+  if [[ ! -f "$SCRIPT_DIR/$source" ]]; then
+    echo "ERROR: incomplete installer package; missing $source" >&2
+    exit 1
+  fi
+done
+if [[ -d "$SCRIPT_DIR/meowhome-ui" && ( ! -f "$SCRIPT_DIR/meowhome-ui/Dockerfile" || ! -f "$SCRIPT_DIR/meowhome-ui/app/main.py" ) ]]; then
+  echo "ERROR: incomplete installer package; meowhome-ui needs Dockerfile and app/main.py" >&2
+  exit 1
+fi
+
+# A root-run installer is supported through sudo, where the invoking host
+# identity is explicit. Refuse direct root installs that would configure PHP
+# and FTP to run as UID/GID 0.
+if [[ "$(id -u)" == "0" ]]; then
+  if [[ ! "${SUDO_UID:-}" =~ ^[0-9]+$ || ! "${SUDO_GID:-}" =~ ^[0-9]+$ || "$SUDO_UID" == "0" ]]; then
+    echo "ERROR: run as a regular host user, or invoke through sudo so SUDO_UID/SUDO_GID identify that user" >&2
+    exit 1
+  fi
+  HOST_UID="$SUDO_UID"
+  HOST_GID="$SUDO_GID"
+else
+  HOST_UID="$(id -u)"
+  HOST_GID="$(id -g)"
+fi
+
+# Only an absent or genuinely empty target is a clean installation. This
+# boundary allows sudo to hand off files created by a clean install without
+# changing ownership of any existing project data during upgrades.
+CLEAN_INSTALL=0
+if [[ ! -e "$PROJECT_DIR" ]]; then
+  CLEAN_INSTALL=1
+elif [[ ! -d "$PROJECT_DIR" ]]; then
+  echo "ERROR: installation target exists and is not a directory: $PROJECT_DIR" >&2
+  exit 1
+else
+  if ! existing_entry="$(find "$PROJECT_DIR" -mindepth 1 -maxdepth 1 -print -quit)"; then
+    echo "ERROR: cannot inspect installation target: $PROJECT_DIR" >&2
+    exit 1
+  fi
+  [[ -n "$existing_entry" ]] || CLEAN_INSTALL=1
+fi
 
 mkdir -p "$PROJECT_DIR"
 PROJECT_DIR="$(cd "$PROJECT_DIR" && pwd -P)"
@@ -36,11 +95,12 @@ PROJECT_DIR="$(cd "$PROJECT_DIR" && pwd -P)"
 mkdir -p \
   "$PROJECT_DIR/apache/vhosts" \
   "$PROJECT_DIR/apache/snippets" \
-  "$PROJECT_DIR/htdocs/example.com" \
+  "$PROJECT_DIR/htdocs" \
   "$PROJECT_DIR/web" \
   "$PROJECT_DIR/php" \
   "$PROJECT_DIR/certbot" \
   "$PROJECT_DIR/dns-updater" \
+  "$PROJECT_DIR/control" \
   "$PROJECT_DIR/ftp/data/users.d" \
   "$PROJECT_DIR/ftp/ssl" \
   "$PROJECT_DIR/tools/ftp" \
@@ -50,6 +110,8 @@ mkdir -p \
   "$PROJECT_DIR/letsencrypt" \
   "$PROJECT_DIR/state" \
   "$PROJECT_DIR/legacy"
+
+chmod 700 "$PROJECT_DIR/control"
 
 # ----------------------------
 # Tools: Warmup (WSL Mount Race Fix)
@@ -107,6 +169,30 @@ fi
 # their explicit IDs to avoid changing ownership contracts during upgrades.
 if [ "$FRESH_ENV" = "1" ]; then
   sed -i -E "s/^PUID=.*/PUID=${HOST_UID}/; s/^PGID=.*/PGID=${HOST_GID}/" "$PROJECT_DIR/.env"
+  INITIAL_UI_PASSWORD="$(python3 -c 'import secrets; print(secrets.token_urlsafe(24))')"
+  python3 - "$PROJECT_DIR/.env" "$INITIAL_UI_PASSWORD" <<'PY_INIT_UI'
+from pathlib import Path
+import sys
+import secrets
+path=Path(sys.argv[1]); password=sys.argv[2]
+lines=path.read_text().splitlines()
+generated = {"MEOWHOME_UI_PASS": password,
+             "DB_ROOT_PASSWORD": secrets.token_urlsafe(32),
+             "DB_PASSWORD": secrets.token_urlsafe(32)}
+out=[]; found=set()
+for line in lines:
+    key = line.split("=", 1)[0]
+    if key in generated:
+        if key not in found:
+            out.append(key + "=" + generated[key]); found.add(key)
+    else:
+        out.append(line)
+for key in generated.keys() - found:
+    out.append(key + "=" + generated[key])
+path.write_text("\n".join(out)+"\n")
+PY_INIT_UI
+  echo "[security] Initial MeowHome UI login: admin / ${INITIAL_UI_PASSWORD}"
+  echo "[security] Store it securely and change it in Setup after first login."
 fi
 
 # Existing .env files from older/manual setups may contain duplicate canonical
@@ -236,7 +322,22 @@ append_env_if_missing "MEOWHOME_UI_USER" "admin"
 append_env_if_missing "MEOWHOME_UI_PASS" "admin"
 append_env_if_missing "MEOWHOME_WEB_EXTERNAL_NETWORKS" ""
 
-
+# Private capability tokens for the internal control adapter. The browser UI
+# receives the admin token; Certbot receives a separate reload-only token.
+CONTROL_TOKEN_FILE="$PROJECT_DIR/control/control.token"
+CERTBOT_CONTROL_TOKEN_FILE="$PROJECT_DIR/control/certbot.token"
+for token_file in "$CONTROL_TOKEN_FILE" "$CERTBOT_CONTROL_TOKEN_FILE"; do
+  if [ ! -s "$token_file" ]; then
+    python3 -c 'import secrets; print(secrets.token_urlsafe(48))' > "$token_file"
+  fi
+  chmod 600 "$token_file"
+done
+CONTROL_UID="$(grep -E '^PUID=' "$PROJECT_DIR/.env" | tail -n1 | cut -d= -f2)"
+CONTROL_GID="$(grep -E '^PGID=' "$PROJECT_DIR/.env" | tail -n1 | cut -d= -f2)"
+chmod 700 "$PROJECT_DIR/control"
+if [ "$(id -u)" = "0" ]; then
+  chown "${CONTROL_UID}:${CONTROL_GID}" "$PROJECT_DIR/control" "$CONTROL_TOKEN_FILE" "$CERTBOT_CONTROL_TOKEN_FILE"
+fi
 
 render_web_external_networks() {
   local compose_file="$PROJECT_DIR/docker-compose.yml"
@@ -262,7 +363,7 @@ import sys
 path=Path(sys.argv[1]); web=sys.argv[2]; top=sys.argv[3]
 s=path.read_text()
 s=s.replace('#__MEOWHOME_WEB_EXTERNAL_NETWORKS__', web)
-s=s.replace('#__MEOWHOME_TOP_LEVEL_EXTERNAL_NETWORKS__', ('networks:\n'+top.rstrip()) if top else '')
+s=s.replace('#__MEOWHOME_TOP_LEVEL_EXTERNAL_NETWORKS__', top.rstrip())
 path.write_text(s)
 PY_RENDER
 }
@@ -270,7 +371,8 @@ PY_RENDER
 # ----------------------------
 # Beispiel Webroot
 # ----------------------------
-if [ ! -e "$PROJECT_DIR/htdocs/example.com/index.php" ]; then
+if [ "$CLEAN_INSTALL" = "1" ] && [ ! -e "$PROJECT_DIR/htdocs/example.com/index.php" ]; then
+  mkdir -p "$PROJECT_DIR/htdocs/example.com"
   cp "$SCRIPT_DIR/assets/htdocs/example.com/index.php" "$PROJECT_DIR/htdocs/example.com/index.php"
 fi
 
@@ -292,12 +394,19 @@ chmod 0644 "$PROJECT_DIR/apache/snippets/cloudflare-origin-pull-ca.pem"
 # ----------------------------
 # Apache VHosts (Example)
 # ----------------------------
-if [ ! -e "$PROJECT_DIR/apache/vhosts/10-example.conf" ]; then
+if [ "$CLEAN_INSTALL" = "1" ] && [ ! -e "$PROJECT_DIR/apache/vhosts/10-example.conf" ]; then
   cp "$SCRIPT_DIR/assets/apache/vhosts/10-example.conf" "$PROJECT_DIR/apache/vhosts/10-example.conf"
 fi
 
-if [ ! -e "$PROJECT_DIR/apache/vhosts/20-templates.conf" ]; then
+if [ "$CLEAN_INSTALL" = "1" ] && [ ! -e "$PROJECT_DIR/apache/vhosts/20-templates.conf" ]; then
   cp "$SCRIPT_DIR/assets/apache/vhosts/20-templates.conf" "$PROJECT_DIR/apache/vhosts/20-templates.conf"
+fi
+
+# New VHosts are MeowHome-owned control-plane files. Use the core owner to
+# establish its canonical owner/modes on a clean install; upgrades leave all
+# existing VHost metadata untouched here.
+if [ "$CLEAN_INSTALL" = "1" ]; then
+  python3 "$PROJECT_DIR/tools/meowhome.py" --project "$PROJECT_DIR" repair-control-plane >/dev/null
 fi
 
 # ----------------------------
@@ -352,7 +461,7 @@ if [ -d "$SCRIPT_DIR/meowhome-ui" ]; then
   else
     # Ersetze Marker durch echten Service-Block
     # Hinweis: sed -i funktioniert je nach Umgebung; in Debian/Ubuntu ok.
-    sed -i 's|^[[:space:]]*#__MEOWHOME_UI_SERVICE__.*$|  ui:\n    build:\n      context: ./meowhome-ui\n      dockerfile: Dockerfile\n    container_name: meowhome_ui\n    env_file: ./.env\n    environment:\n      MEOWHOME_PROJECT_DIR: /meowhome\n      MEOWHOME_UI_BIND: ${MEOWHOME_UI_BIND:-127.0.0.1}\n      MEOWHOME_UI_PORT: ${MEOWHOME_UI_PORT:-9090}\n      MEOWHOME_UI_USER: ${MEOWHOME_UI_USER:-admin}\n      MEOWHOME_UI_PASS: ${MEOWHOME_UI_PASS:-admin}\n    ports:\n      - \"${MEOWHOME_UI_BIND:-127.0.0.1}:${MEOWHOME_UI_PORT:-9090}:8000\"\n    volumes:\n      - "${MEOWHOME_HOST_PROJECT_DIR:-.}:/meowhome:rw"\n      - /var/run/docker.sock:/var/run/docker.sock\n    restart: unless-stopped|g' "$PROJECT_DIR/docker-compose.yml"
+    sed -i 's|^[[:space:]]*#__MEOWHOME_UI_SERVICE__.*$|  ui:\n    build:\n      context: ./meowhome-ui\n      dockerfile: Dockerfile\n    container_name: meowhome_ui\n    env_file: ./.env\n    environment:\n      MEOWHOME_PROJECT_DIR: /meowhome\n      MEOWHOME_CONTROL_URL: http://control:8765\n      MEOWHOME_CONTROL_TOKEN_FILE: /run/secrets/meowhome-control-token\n      MEOWHOME_UI_BIND: ${MEOWHOME_UI_BIND:-127.0.0.1}\n      MEOWHOME_UI_PORT: ${MEOWHOME_UI_PORT:-9090}\n      MEOWHOME_UI_USER: ${MEOWHOME_UI_USER:-admin}\n      MEOWHOME_UI_PASS: ${MEOWHOME_UI_PASS:-admin}\n    ports:\n      - "${MEOWHOME_UI_BIND:-127.0.0.1}:${MEOWHOME_UI_PORT:-9090}:8000"\n    volumes:\n      - "${MEOWHOME_HOST_PROJECT_DIR:-.}/.env:/meowhome/.env:rw"\n      - "${MEOWHOME_HOST_PROJECT_DIR:-.}/apache/vhosts:/meowhome/apache/vhosts:rw"\n      - "${MEOWHOME_HOST_PROJECT_DIR:-.}/apache/snippets:/meowhome/apache/snippets:ro"\n      - "${MEOWHOME_HOST_PROJECT_DIR:-.}/backups:/meowhome/backups:ro"\n      - "${MEOWHOME_HOST_PROJECT_DIR:-.}/letsencrypt:/meowhome/letsencrypt:ro"\n      - "${MEOWHOME_HOST_PROJECT_DIR:-.}/state:/meowhome/state:rw"\n      - "${MEOWHOME_HOST_PROJECT_DIR:-.}/control/control.token:/run/secrets/meowhome-control-token:ro"\n    networks:\n      - default\n      - control_net\n    depends_on:\n      - control\n    restart: unless-stopped|g' "$PROJECT_DIR/docker-compose.yml"
 
     # Installer materializes files only. Lifecycle remains with Compose and is
     # never mutated implicitly during an upgrade.
@@ -362,6 +471,14 @@ else
   sed -i '/#__MEOWHOME_UI_SERVICE__/d' "$PROJECT_DIR/docker-compose.yml" 2>/dev/null || true
 fi
 
+
+# ----------------------------
+# Internal control adapter (sole Docker-socket consumer for browser UI/Certbot)
+# ----------------------------
+if [ -d "$SCRIPT_DIR/meowhome-control" ]; then
+  mkdir -p "$PROJECT_DIR/meowhome-control"
+  cp -a "$SCRIPT_DIR/meowhome-control/." "$PROJECT_DIR/meowhome-control/"
+fi
 
 # ----------------------------
 # web/Dockerfile (Apache)
@@ -413,6 +530,12 @@ print("certbot.py fehlt. Optional: lege es neben init-meowhome.sh, dann wird es 
 PY
 fi
 
+# A sudo clean install created the whole project as root. Hand off only this
+# verified empty-target install; never recurse through an existing project.
+if [ "$CLEAN_INSTALL" = "1" ] && [ "$(id -u)" = "0" ]; then
+  chown -R "${HOST_UID}:${HOST_GID}" "$PROJECT_DIR"
+fi
+
 # ----------------------------
 # Abschluss
 # ----------------------------
@@ -427,8 +550,10 @@ Installation: $PROJECT_DIR
 WICHTIGE SCHRITTE:
 ==================
 
-WebUI: http://127.0.0.1:9090 (Default: admin/admin)
-Nach dem ersten Start direkt in /setup die .env und Login-Daten anpassen.
+WebUI: http://127.0.0.1:9090
+Login: MEOWHOME_UI_USER + das konfigurierte Passwort.
+Bei einer frischen Installation wurde das zufaellige Initialpasswort oben einmal ausgegeben.
+Bestehende Login-Daten werden bei Upgrades nicht automatisch geaendert.
 
 1️⃣  KONFIGURATION
    nano $PROJECT_DIR/.env
@@ -443,7 +568,9 @@ Nach dem ersten Start direkt in /setup die .env und Login-Daten anpassen.
    - ACME_CHALLENGE (dns=default / http=fallback)
    - CLOUDFLARE_API_TOKEN (nur noetig wenn ACME_CHALLENGE=dns oder DNS_UPDATER_ENABLED=true)
    - FTP_PUBLIC_HOST (oeffentliche IP/Domain!)
-   - DB Passwoerter aendern
+   - DB Passwoerter: bei Neuinstallation zufaellig erzeugt und in .env gespeichert
+   - Certbot/DNS sind bei Neuinstallation aus; nach Konfiguration gezielt aktivieren
+   - FTP ist an localhost gebunden; vor LAN/Internet-Freigabe FTPS konfigurieren
 
 2️⃣  PORTS PRUeFEN
    - 80, 443 (HTTP/HTTPS)

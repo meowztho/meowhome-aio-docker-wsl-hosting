@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-header"><div><div class="eyebrow">{{ site.host }}</div><h1>File Manager</h1><p class="muted">Dateien innerhalb des Webroots verwalten. Kein Zugriff außerhalb dieser Domain.</p></div><div class="toolbar"><a class="btn" href="/sites/{{ site.host }}">Website</a><a class="btn" href="/sites">Alle Websites</a></div></div>
+<div class="notice"><strong>Pfad:</strong> /{{ listing.path }}{% if listing.path %} · <a href="/sites/{{ site.host }}/files?path={{ listing.parent|urlencode }}">Eine Ebene höher</a>{% endif %}</div>
+<div class="grid" style="margin-top:16px">
+  <section class="card col-8">
+    <div class="card-header"><div><div class="card-title">Inhalt</div><p class="muted">{{ listing.entries|length }} Einträge</p></div></div>
+    <div class="resource-list">
+    {% for e in listing.entries %}
+      <div class="resource-row">
+        <div class="resource-main"><strong>{% if e.kind == 'dir' %}📁{% elif e.kind == 'file' %}📄{% else %}↗{% endif %} {{ e.name }}</strong><div class="muted">{{ e.kind }}{% if e.kind == 'file' %} · {{ e.size }} Bytes{% endif %}</div></div>
+        <div class="resource-meta"></div><div class="resource-meta"></div>
+        <div class="toolbar">
+          {% if e.kind == 'dir' %}<a class="btn btn-sm" href="/sites/{{ site.host }}/files?path={{ e.path|urlencode }}">Öffnen</a>{% elif e.kind == 'file' and e.size <= 1048576 %}<a class="btn btn-sm" href="/sites/{{ site.host }}/files/edit?path={{ e.path|urlencode }}">Bearbeiten</a>{% endif %}
+          {% if e.kind in ['dir','file'] %}<form method="post" action="/sites/{{ site.host }}/files/delete" data-item="{{ e.name }}" onsubmit="return confirm('„' + this.dataset.item + '“ wirklich löschen? Ordner müssen leer sein.');"><input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}"><input type="hidden" name="path" value="{{ e.path }}"><input type="hidden" name="directory" value="{{ listing.path }}"><button class="btn btn-sm btn-danger" type="submit">Löschen</button></form>{% endif %}
+        </div>
+      </div>
+    {% else %}<div class="notice">Dieser Ordner ist leer.</div>{% endfor %}
+    </div>
+  </section>
+  <aside class="card col-4">
+    <div class="eyebrow">Neu</div><div class="card-title">Ordner erstellen</div>
+    <form method="post" action="/sites/{{ site.host }}/files/mkdir" class="stack" style="margin-top:12px"><input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}"><input type="hidden" name="directory" value="{{ listing.path }}"><input name="name" required placeholder="assets"><button class="btn" type="submit">Ordner erstellen</button></form>
+    <hr><div class="card-title">Datei hochladen</div>
+    <form method="post" action="/sites/{{ site.host }}/files/upload" enctype="multipart/form-data" class="stack" style="margin-top:12px"><input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}"><input type="hidden" name="directory" value="{{ listing.path }}"><input type="file" name="upload" required><label><input type="checkbox" name="overwrite" value="1"> vorhandene Datei überschreiben</label><button class="btn btn-primary" type="submit">Hochladen</button><span class="field-help">Maximal 8 MiB pro Datei.</span></form>
+  </aside>
+</div>
+{% endblock %}

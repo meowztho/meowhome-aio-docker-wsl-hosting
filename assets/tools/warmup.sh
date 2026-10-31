@@ -56,7 +56,7 @@ for i in $(seq 1 180); do
     log "Waiting for Docker Desktop WSL integration... (${i}s)"
   fi
   if [[ "$i" -eq 180 ]]; then
-    log "ERROR: Docker API / WSL bind mounts not ready after 180s; refusing to recreate containers."
+    log "ERROR: Docker API / WSL bind mounts not ready after 180s; refusing to restart containers."
     exit 1
   fi
   sleep 1

@@ -11,6 +11,7 @@ RUN { \
   echo "ServerName localhost"; \
   echo ""; \
   echo "<Directory /var/www>"; \
+  echo "  Options -Indexes +FollowSymLinks"; \
   echo "  AllowOverride All"; \
   echo "  Require all granted"; \
   echo "</Directory>"; \

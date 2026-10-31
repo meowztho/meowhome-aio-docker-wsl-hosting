@@ -2,9 +2,14 @@
 
 **All-in-One Docker-based Web Hosting Stack with FTP, SSL, DNS, backups, and a local control plane**
 
-Current release: **2.5.2**
+Current release: **2.9.6**
 
 MeowHome is a lightweight multi-domain hosting stack for Linux/WSL2. Apache, PHP, MariaDB, FTPS, Let's Encrypt, DNS automation, and the Web UI run in Docker, while persistent website and service data stays directly in the project directory as WSL/Linux bind-mounted files rather than Docker named volumes.
+
+This release targets private operation by one trusted administrator. PHP and FTP
+share the configured `PUID:PGID`; FTP logins restrict directory views but do not
+isolate executable website code. Hosting untrusted customers requires the next
+isolation phase described in `ARCHITECTURE.md`.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Docker](https://img.shields.io/badge/Docker-Ready-blue.svg)](https://www.docker.com/)
@@ -44,6 +49,7 @@ MeowHome is a lightweight multi-domain hosting stack for Linux/WSL2. Apache, PHP
 - **Automatic renewal** every 12 hours
 - **DNS updater** for dynamic IPs (Cloudflare)
 - **Reusable TLS configuration** for Apache virtual hosts
+- **Declarative SPF reconciliation** (opt-in; no historical IP accumulation)
 
 ### 📁 FTP Server
 - **vsftpd** with virtual users (PAM-based)
@@ -60,6 +66,7 @@ MeowHome is a lightweight multi-domain hosting stack for Linux/WSL2. Apache, PHP
 - **backup.sh**: Backup Tool
 - **restore.sh**: Restore Tool
 - **meowhome.py**: stable operational CLI (`doctor`, `status`, lifecycle, logs)
+- **Private control adapter**: fixed privileged operations without exposing the Docker socket to the UI or Certbot
 
 ---
 ## 🔧 Web UI (MeowHome UI)
@@ -68,9 +75,10 @@ MeowHome includes an optional local-only Web UI designed as a control center for
 
 The UI is not exposed to the internet by default and is intended to be used only:
 
-locally (127.0.0.1)
+- locally (`127.0.0.1`) by default
+- or, only after explicit operator configuration, from a trusted LAN/VPN
 
-or from the same network / via VPN
+All state-changing browser actions use same-origin + signed CSRF protection. The UI itself has no Docker socket. Privileged operations are sent to the non-published `meowhome_control` service over an internal Docker network using owner-only capability tokens. Certbot uses a separate reload-only credential.
 
 ### Features
 
@@ -115,6 +123,18 @@ or from the same network / via VPN
 ```bash
 ~/meowhome/backups/
 ```
+
+
+### Security model
+
+- Web UI defaults to `127.0.0.1` and uses HTTP Basic authentication.
+- Fresh installs receive a random initial admin password; existing passwords are preserved on upgrade.
+- Every state-changing UI route requires same-origin + signed CSRF validation.
+- `meowhome_ui` and `meowhome_certbot` do not mount `/var/run/docker.sock`.
+- Only `meowhome_control` owns the socket; it publishes no host port and accepts only fixed MeowHome operations.
+- UI and Certbot use separate control tokens; Certbot is limited to Apache reload.
+- Administrative mutations are recorded without secrets in `state/control-audit.jsonl`.
+- `doctor` checks sensitive-file modes, socket regressions, proxy-override mistakes, and SPF desired-state requirements.
 
 ### 🔒 Restore is intentionally not available via the UI
 Restoring a backup is done via a dedicated shell script to avoid accidental data loss and to ensure safe container shutdown.
@@ -178,7 +198,7 @@ This will:
 ### 1. Installation
 
 ```bash
-# Clone repository (or download the script)
+# Clone the complete repository (the installer needs its assets)
 git clone https://github.com/meowztho/meowhome-aio-docker-wsl-hosting.git
 cd meowhome-aio-docker-wsl-hosting
 
@@ -188,6 +208,20 @@ chmod +x init-meowhome.sh
 ```
 
 ### 2. Configuration
+
+Fresh installations generate separate UI and database passwords, keep FTP on
+localhost, and leave Certbot/DNS automation disabled until real domains are
+configured. Existing installations retain their configuration and credentials.
+Run the installer as your normal WSL user, or through `sudo` from that user.
+Install into the Linux filesystem (for example `~/meowhome`), where Unix ownership
+and modes are available.
+
+When native WSL Docker and Docker Desktop coexist, explicitly select the engine
+running MeowHome for all CLI commands. `MEOWHOME_DOCKER_SOCKET` sets that engine's
+host socket for the private control service; its default is `/var/run/docker.sock`.
+It does not change the global Docker context. A socket change requires recreating
+only the control service with `docker compose up -d --no-deps control`.
+
 ### You can configure MeowHome either manually via .env or via the Web UI.
 
 ### Option A: Manual .env configuration (CLI)
@@ -224,9 +258,8 @@ DNS_UPDATER_ENABLED=false
 # FTP: public IP or domain
 FTP_PUBLIC_HOST=ftp.example.com
 
-# Database passwords
-DB_ROOT_PASSWORD=secure_password_here
-DB_PASSWORD=app_password_here
+# Keep the independently generated database passwords from installation.
+# Changing .env alone does not change credentials in an initialized database.
 ```
 
 ### 3. Start the system
@@ -277,11 +310,13 @@ Then open the Web UI in your browser:
 ```bash
 http://127.0.0.1:9090
 ```
-Default login:
-```bash
+Initial login:
+```text
 Username: admin
-Password: admin
+Password: <random value printed once by init-meowhome.sh>
 ```
+
+Fresh installations generate this password automatically. Upgrades preserve the existing `MEOWHOME_UI_PASS`; MeowHome never silently changes an existing administrator credential.
 
 The guided setup flow allows you to:
 - **Configure the full .env file via the browser**
@@ -300,7 +335,7 @@ This approach is ideal if you:
 
 ### Core-first contract
 
-MeowHome 2.5 treats `.env`, Compose service names, persistent-data boundaries, and `tools/meowhome.py` as the stable operational contract. `ftp/users.sqlite` is the source of truth for FTP identities; `ftp/data/` is generated and can be rebuilt. Existing `htdocs/` content and Apache VHost files are user-owned and are not replaced by installer upgrades.
+MeowHome 2.7 treats `.env`, Compose service names, persistent-data boundaries, and `tools/meowhome.py` as the stable operational contract. The Web UI is an adapter, while privileged Docker operations are isolated behind the internal `meowhome_control` service. `ftp/users.sqlite` is the source of truth for FTP identities; `ftp/data/` is generated and can be rebuilt. Existing `htdocs/` content and Apache VHost files are user-owned and are not replaced by installer upgrades.
 
 For diagnosis, prefer:
 
@@ -434,7 +469,7 @@ HTTPS_BIND=0.0.0.0
 HTTPS_PORT=443
 PHPMYADMIN_BIND=127.0.0.1
 PHPMYADMIN_PORT=8080
-FTP_BIND=0.0.0.0
+FTP_BIND=127.0.0.1
 FTP_PORT=21
 
 FTP_PASV_MIN=21000
@@ -1133,7 +1168,7 @@ docker compose up --build
 
 The authoritative release history is maintained in [`CHANGELOG.md`](CHANGELOG.md).
 
-Current release: **2.5.2** — includes the Core-First runtime contract, the modernized Web UI/control plane, multi-domain FTP access, safer upgrade/backup behavior, FTPS client compatibility, and the Backup-page layout hotfix.
+Current release: **2.9.6** — private-use stabilization of installation, FTP identity mapping, file operations and recovery. See CHANGELOG.md for changes and ARCHITECTURE.md for the current trust boundary.
 
 ---
 

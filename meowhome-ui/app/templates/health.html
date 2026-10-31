@@ -1,10 +1,10 @@
 {% extends "base.html" %}
 {% block content %}
-<div class="page-header split"><div><div class="eyebrow">Diagnostics</div><h1>Health Check</h1><p class="muted">Laufzeitstatus der acht MeowHome-Services.</p></div><span class="badge {{ 'ok' if docker_ok else 'error' }}">Docker {{ 'OK' if docker_ok else 'ERROR' }}</span></div>
+<div class="page-header split"><div><div class="eyebrow">Diagnostics</div><h1>Health Check</h1><p class="muted">Laufzeitstatus der MeowHome-Services und Control-Komponenten.</p></div><span class="badge {{ 'ok' if docker_ok else 'error' }}">Docker {{ 'OK' if docker_ok else 'ERROR' }}</span></div>
 {% if not docker_ok %}<div class="notice danger"><strong>Docker nicht erreichbar.</strong><pre>{{ docker_msg }}</pre></div>{% endif %}
 <div class="card">
 <table><thead><tr><th>Service</th><th>Status</th><th>Health</th><th>Restarts</th><th>Image</th><th></th></tr></thead><tbody>
-{% for c in containers %}<tr><td><strong>{{ c.name }}</strong></td><td><span class="badge {{ 'ok' if c.status == 'running' else 'warning' }}">{{ c.status }}</span></td><td>{{ c.health or '—' }}</td><td>{{ c.restart_count }}</td><td class="muted">{{ c.image or 'lokal' }}</td><td><div class="toolbar"><form action="/container/{{ c.name }}/action" method="post"><button class="btn btn-sm" name="action" value="restart">Restart</button></form><a class="btn btn-sm btn-ghost" href="/container/{{ c.name }}/logs?lines=200">Logs</a></div></td></tr>{% endfor %}
+{% for c in containers %}<tr><td><strong>{{ c.name }}</strong></td><td><span class="badge {{ 'ok' if c.status == 'running' else 'warning' }}">{{ c.status }}</span></td><td>{{ c.health or '—' }}</td><td>{{ c.restart_count }}</td><td class="muted">{{ c.image or 'lokal' }}</td><td><div class="toolbar"><form action="/container/{{ c.name }}/action" method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}"><button class="btn btn-sm" name="action" value="restart">Restart</button></form><a class="btn btn-sm btn-ghost" href="/container/{{ c.name }}/logs?lines=200">Logs</a></div></td></tr>{% endfor %}
 </tbody></table>
 </div>
 <div class="notice" style="margin-top:16px;">Bei <code>restarting</code> oder <code>exited</code> zuerst die Logs ansehen. Für Konfigurationsdrift zusätzlich auf dem Host <code>./tools/meowhome.py doctor</code> ausführen.</div>

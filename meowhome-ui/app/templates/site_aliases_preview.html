@@ -1,0 +1,7 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-header"><div><div class="eyebrow">Änderungsvorschau</div><h1>Aliases: {{ site.host }}</h1><p class="muted">Nur die angezeigten ServerAlias-Zeilen ändern sich. Andere Direktiven bleiben unverändert.</p></div><a class="btn" href="/sites/{{ site.host }}/aliases">Zurück</a></div>
+<section class="card"><div class="card-title">Apache-Diff</div>
+{% if changed %}<pre style="white-space:pre-wrap;overflow-wrap:anywhere">{{ diff }}</pre><form method="post" action="/sites/{{ site.host }}/aliases/apply"><input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}"><input type="hidden" name="revision" value="{{ revision }}"><input type="hidden" name="aliases" value="{{ aliases }}"><div class="toolbar"><button class="btn btn-primary" type="submit">Geprüfte Änderung übernehmen</button><a class="btn" href="/sites/{{ site.host }}/aliases">Abbrechen</a></div></form>{% else %}<div class="notice">Keine Änderung nötig. Die vorhandene Konfiguration bleibt unverändert.</div><a class="btn" href="/sites/{{ site.host }}">Zurück</a>{% endif %}
+</section>
+{% endblock %}

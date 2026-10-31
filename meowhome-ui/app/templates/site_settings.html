@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-header"><div><div class="eyebrow">Hosting-Einstellungen</div><h1>{{ site.host }}</h1><p class="muted">Bearbeitet nur eindeutig von MeowHome generierte Apache-VHosts. Kein DNS- oder ACME-Eingriff.</p></div><a class="btn" href="/sites/{{ site.host }}">Zurück</a></div>
+<form method="post" action="/sites/{{ site.host }}/settings" class="grid">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+  <input type="hidden" name="revision" value="{{ revision }}">
+  <section class="card col-8">
+    <div class="card-header"><div class="card-title">Website</div><span class="badge">{{ 'Webroot' if site.kind == 'website' else 'Reverse Proxy' }}</span></div>
+    <div class="field"><label>Domain</label><input value="{{ site.host }}" disabled><span class="field-help">Die Hauptdomain bleibt unverändert. Neue Domains separat anlegen.</span></div>
+    <div class="field"><label>Weitere Hostnamen (Aliases)</label><input name="aliases" value="{{ site.aliases|join(', ') }}" placeholder="www.example.com, alias.example.com"><span class="field-help">Nur Namen, die nicht bereits einem anderen VHost zugeordnet sind. Ein gültiges Zertifikat muss jeden Alias abdecken.</span></div>
+    {% if site.kind == 'website' %}<label class="check-item"><input type="checkbox" name="php" value="true" {% if site.php %}checked{% endif %}> PHP-FPM für diese Website aktivieren</label><p class="muted" style="margin-top:12px">Webroot: <code>{{ site.document_root }}</code> (wird nicht verändert)</p>{% else %}<div class="field"><label>Proxy-Ziel (HTTP/HTTPS)</label><input name="proxy_target" required value="{{ site.proxy_target }}"><span class="field-help">Ziel muss vom Apache-Container erreichbar sein; keine Zugangsdaten in der URL.</span></div>{% endif %}
+  </section>
+  <aside class="card col-4"><div class="card-title">HTTPS-Zertifikat</div>
+    <div class="field" style="margin-top:14px"><label>Zuordnung</label><select name="cert_domain"><option value="keep" selected>Aktuelle Zuordnung beibehalten{% if site.cert_domain %} ({{ site.cert_domain }}){% else %} (HTTP){% endif %}</option><option value="auto">Passendes vorhandenes Zertifikat wählen</option>{% for c in certs %}<option value="{{ c.domain }}">{{ c.domain }}{% if c.expires_at %} · {{ c.expires_at }}{% endif %}</option>{% endfor %}<option value="none">HTTPS ausdrücklich deaktivieren</option></select></div>
+    <div class="notice">Certbot stellt Zertifikate für konfigurierte Zonen automatisch aus und erneuert sie. Diese Seite ordnet ausschließlich <strong>bereits vorhandene</strong> Zertifikate zu.</div>
+    <p class="muted" style="margin-top:12px">Der DNS-Updater hält konfigurierte vorhandene A-Records aktuell, erstellt aber keine neuen DNS-Einträge.</p>
+    <a class="btn" href="/certificates">Zertifikate prüfen</a>
+  </aside>
+  <div class="col-12 toolbar"><button class="btn btn-primary" type="submit">Änderungen prüfen &amp; speichern</button><a class="btn" href="/sites/{{ site.host }}">Abbrechen</a></div>
+</form>
+{% endblock %}

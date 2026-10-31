@@ -1,0 +1,5 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-header"><div><div class="eyebrow">Hosting</div><h1>VHost hinzufügen</h1><p class="muted">Geführt als Website / Proxy oder vorhandene Apache-Konfiguration eintragen.</p></div><a class="btn" href="/vhosts">Zurück</a></div>
+<div class="grid"><section class="card col-6"><div class="card-title">Geführt erstellen</div><p class="muted">Domain, optionale Aliases, PHP oder Proxy-Ziel und bestehendes Zertifikat auswählen.</p><a class="btn btn-primary" href="/sites/new">Website / Proxy erstellen</a></section><section class="card col-6"><div class="card-title">Eigene Konfiguration eintragen</div><form method="get" action="/vhosts/edit" class="stack"><div class="field"><label>Neuer Dateiname</label><input name="file" placeholder="example.com.conf" required pattern="[A-Za-z0-9_.-]+\.conf"></div><button class="btn" type="submit">Apache-Konfiguration eingeben</button></form></section></div>
+{% endblock %}

@@ -13,12 +13,14 @@ import pathlib
 import re
 import shutil
 import stat
+import tempfile
+import time
 import subprocess
 import sys
 from dataclasses import asdict, dataclass
 from typing import Any, Iterable
 
-VERSION = "2.6.2"
+VERSION = "2.9.6"
 SERVICE_NAMES = (
     "web",
     "php",
@@ -27,6 +29,7 @@ SERVICE_NAMES = (
     "certbot",
     "dns_updater",
     "ftp",
+    "control",
     "ui",
 )
 CONTAINER_BY_SERVICE = {
@@ -37,6 +40,7 @@ CONTAINER_BY_SERVICE = {
     "certbot": "meowhome_certbot",
     "dns_updater": "meowhome_dns_updater",
     "ftp": "meowhome_ftp",
+    "control": "meowhome_control",
     "ui": "meowhome_ui",
 }
 CORE_PATHS = (
@@ -180,6 +184,112 @@ def _set_control_plane_metadata(path: pathlib.Path, mode: int, ids: tuple[int, i
     os.chown(path, ids[0], ids[1])
 
 
+LEGACY_FTP_ENV_KEYS = frozenset({"FTP_ENABLED", "FTP_HOST_UID", "FTP_HOST_GID"})
+
+
+def cleanup_legacy_ftp_env(project: pathlib.Path, apply: bool = False) -> dict[str, Any]:
+    """Remove obsolete compatibility env entries without touching canonical IDs.
+
+    Preview is read-only. Apply is atomic and stores a private exact-byte backup.
+    Never changes FTP SQLite identities, running containers, webroots or credentials.
+    """
+    env_path = project / ".env"
+    if env_path.is_symlink() or not env_path.is_file():
+        raise ValueError("Missing or symlink .env; refuse to migrate")
+    canonical = read_env(env_path)
+    if not all(canonical.get(k, "").isdigit() for k in ("PUID", "PGID")):
+        raise ValueError("Canonical PUID/PGID must be present and numeric")
+    if any(k in duplicate_env_keys(env_path) for k in ("PUID", "PGID")):
+        raise ValueError("Duplicate canonical ID keys; resolve before migrating")
+    raw = env_path.read_bytes()
+    lines = raw.splitlines(keepends=True)
+    removed = []
+    kept = []
+    for line in lines:
+        try:
+            text = line.decode("utf-8")
+        except UnicodeDecodeError:
+            raise ValueError("The .env file must be UTF-8")
+        key = text.split("=", 1)[0].strip() if "=" in text else ""
+        if key in LEGACY_FTP_ENV_KEYS:
+            removed.append(key)
+        else:
+            kept.append(line)
+    result = {"changed": bool(removed), "keys": sorted(set(removed)), "applied": False}
+    if not apply or not removed:
+        return result
+    if os.geteuid() != env_path.stat().st_uid:
+        raise PermissionError("Migration requires the owning host user")
+    st = env_path.stat()
+    if stat.S_IMODE(st.st_mode) != 0o600:
+        raise PermissionError(".env must be owner-only mode 0600 before migrating")
+    # Backups remain outside project and out of archives/Compose build contexts.
+    backup_root = project.parent / ".meowhome-upgrade"
+    if not backup_root.is_dir() or backup_root.is_symlink():
+        raise ValueError("Expected upgrade directory missing")
+    backup_dir = backup_root / "private-config-backups"
+    if backup_dir.is_symlink():
+        raise PermissionError("Private backup directory must not be a symlink")
+    backup_dir.mkdir(mode=0o700, exist_ok=True)
+    if stat.S_IMODE(backup_dir.stat().st_mode) != 0o700 or backup_dir.stat().st_uid != os.geteuid():
+        raise PermissionError("Private backup directory must be mode 0700 and owned by the current user")
+    marker = str(time.time_ns())
+    backup = backup_dir / ("legacy-ftp-env-" + marker + ".backup")
+    fd = os.open(backup, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(raw)
+    except BaseException:
+        backup.unlink(missing_ok=True)
+        raise
+    fd, temp = tempfile.mkstemp(prefix=".env-migrate-", dir=project)
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(b"".join(kept))
+        os.chmod(temp, 0o600)
+        if env_path.read_bytes() != raw:
+            raise RuntimeError(".env changed during migration, aborting")
+        os.replace(temp, env_path)
+    finally:
+        if os.path.exists(temp):
+            os.unlink(temp)
+    result["applied"] = True
+    result["backup"] = str(backup)
+    return result
+
+
+def access_review(project: pathlib.Path) -> dict[str, Any]:
+    """Report configuration and resource metadata; no secrets or mutations."""
+    env = read_env(project / ".env")
+    owner = canonical_host_ids(project)
+    report: dict[str, Any] = {"expected_owner": ":".join(map(str, owner)) if owner else None,
+                               "ftp_all_domain_users": [], "webroot_owner_mismatches": []}
+    db_path = project / "ftp/users.sqlite"
+    if db_path.is_file():
+        import sqlite3
+        with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as conn:
+            cols = {r[1] for r in conn.execute("PRAGMA table_info(users)")}
+            if "access_mode" in cols:
+                users = conn.execute("SELECT username FROM users WHERE enabled=1 AND access_mode='all' ORDER BY username")
+            else:
+                users = conn.execute("SELECT username FROM users WHERE enabled=1 AND home_rel='' ORDER BY username")
+            report["ftp_all_domain_users"] = [r[0] for r in users]
+    webroots = project / "htdocs"
+    if owner and webroots.is_dir():
+        for entry in sorted(webroots.iterdir()):
+            if not entry.is_dir() or entry.is_symlink():
+                continue
+            st = entry.stat()
+            if (st.st_uid, st.st_gid) != owner:
+                report["webroot_owner_mismatches"].append({
+                    "name": entry.name, "owner": f"{st.st_uid}:{st.st_gid}",
+                    "mode": f"{stat.S_IMODE(st.st_mode):04o}",
+                    "suggestion": "Check app/file-manager write paths before non-recursive owner change"
+                })
+    report["legacy_env_keys"] = sorted(set(env) & LEGACY_FTP_ENV_KEYS)
+    return report
+
+
 def repair_control_plane_permissions(project: pathlib.Path) -> dict[str, Any]:
     """Normalize only MeowHome-owned Apache control-plane metadata.
 
@@ -261,17 +371,32 @@ def validate_config(project: pathlib.Path) -> list[Issue]:
         ))
 
     if os.name == "posix":
-        for rel in (".env", "ftp/users.sqlite"):
-            sensitive = project / rel
-            if sensitive.is_file():
-                mode = stat.S_IMODE(sensitive.stat().st_mode)
-                if mode & 0o077:
-                    issues.append(Issue(
-                        "warning",
-                        "sensitive_permissions",
-                        f"{rel} is readable/writable by group or others (mode {mode:04o}).",
-                        f"Review ownership, then run: chmod 600 {rel}",
-                    ))
+        sensitive_paths = [project / ".env", project / "ftp/users.sqlite", project / "control/control.token", project / "control/certbot.token"]
+        for pattern in (".env.bak.*", ".env.pre-*", ".env.backup*"):
+            sensitive_paths.extend(project.glob(pattern))
+        seen_sensitive: set[pathlib.Path] = set()
+        for sensitive in sensitive_paths:
+            if sensitive in seen_sensitive or not sensitive.is_file():
+                continue
+            seen_sensitive.add(sensitive)
+            mode = stat.S_IMODE(sensitive.stat().st_mode)
+            if mode & 0o077:
+                rel = str(sensitive.relative_to(project))
+                issues.append(Issue(
+                    "warning",
+                    "sensitive_permissions",
+                    f"{rel} is readable/writable by group or others (mode {mode:04o}).",
+                    f"Review ownership, then run: chmod 600 {rel}",
+                ))
+        for token_name in ("control.token", "certbot.token"):
+            control_token = project / "control" / token_name
+            if not control_token.is_file() or control_token.stat().st_size < 32:
+                issues.append(Issue(
+                    "error",
+                    "control_token_missing",
+                    f"The private MeowHome control adapter token control/{token_name} is missing or too short.",
+                    "Run the current init-meowhome.sh upgrade to create private control tokens.",
+                ))
 
     for key in ("PUID", "PGID"):
         raw = env.get(key, "")
@@ -295,6 +420,10 @@ def validate_config(project: pathlib.Path) -> list[Issue]:
         ))
 
 
+    docker_socket = env.get("MEOWHOME_DOCKER_SOCKET", "/var/run/docker.sock") or "/var/run/docker.sock"
+    if not pathlib.Path(docker_socket).is_absolute():
+        issues.append(Issue("error", "docker_socket_relative", "MEOWHOME_DOCKER_SOCKET must be an absolute host socket path."))
+
     external_networks = [x.strip() for x in env.get("MEOWHOME_WEB_EXTERNAL_NETWORKS", "").split(",") if x.strip()]
     invalid_networks = [n for n in external_networks if not re.fullmatch(r"[A-Za-z0-9_.-]+", n)]
     if invalid_networks:
@@ -302,9 +431,41 @@ def validate_config(project: pathlib.Path) -> list[Issue]:
     if len(set(external_networks)) != len(external_networks):
         issues.append(Issue("warning", "external_network_duplicate", "MEOWHOME_WEB_EXTERNAL_NETWORKS contains duplicate names."))
 
-    domains = [x.strip() for x in env.get("DOMAINS", "").split(",") if x.strip()]
+    domains = [x.strip().lower() for x in env.get("DOMAINS", "").split(",") if x.strip()]
     if not domains or any(re.search(r"[\s/]", d) for d in domains):
         issues.append(Issue("error", "domains_invalid", "DOMAINS must contain valid comma-separated hostnames."))
+
+    overrides = env.get("PROXIED_OVERRIDES", "")
+    for raw_pair in [x.strip() for x in overrides.split(",") if x.strip()]:
+        if "=" not in raw_pair:
+            issues.append(Issue("warning", "proxied_override_invalid", f"Invalid PROXIED_OVERRIDES entry: {raw_pair}"))
+            continue
+        host_name, raw_value = raw_pair.split("=", 1)
+        host_name = host_name.strip().lower()
+        raw_value = raw_value.strip().lower()
+        if raw_value not in {"true", "false", "1", "0", "yes", "no", "on", "off"}:
+            issues.append(Issue("warning", "proxied_override_invalid", f"Invalid proxy boolean for {host_name}: {raw_value}"))
+        if domains and not any(host_name == zone or host_name.endswith("." + zone) for zone in domains):
+            issues.append(Issue(
+                "warning",
+                "proxied_override_outside_domains",
+                f"PROXIED_OVERRIDES host {host_name!r} is not inside configured DOMAINS.",
+                "Check the hostname for typos before the DNS updater is allowed to manage it.",
+            ))
+
+    for zone in domains:
+        slug = re.sub(r"[^A-Za-z0-9]", "_", zone)
+        if bool_value(env.get(f"SPF_UPDATE_{slug}", "false"), False):
+            template = env.get(f"SPF_TEMPLATE_{slug}", "").strip()
+            if not template:
+                issues.append(Issue(
+                    "error",
+                    "spf_template_missing",
+                    f"SPF_UPDATE_{slug}=true but SPF_TEMPLATE_{slug} is empty.",
+                    "Define the complete desired SPF record; MeowHome no longer appends historical IP mechanisms.",
+                ))
+            elif not template.lower().startswith("v=spf1"):
+                issues.append(Issue("error", "spf_template_invalid", f"SPF_TEMPLATE_{slug} must start with v=spf1."))
 
     cert_enabled = bool_value(env.get("CERTBOT_ENABLED", "true"), True)
     dns_enabled = bool_value(env.get("DNS_UPDATER_ENABLED", "true"), True)
@@ -330,7 +491,7 @@ def validate_config(project: pathlib.Path) -> list[Issue]:
 
     bind = env.get("MEOWHOME_UI_BIND", "127.0.0.1")
     ui_pass = env.get("MEOWHOME_UI_PASS", "admin")
-    ui_default = not ui_pass or ui_pass == "admin"
+    ui_default = not ui_pass or ui_pass in {"admin", "GENERATED_ON_INSTALL"}
     if ui_default:
         severity = "warning" if bind in {"127.0.0.1", "localhost", "::1"} else "error"
         issues.append(Issue(severity, "ui_default_password", "MEOWHOME_UI_PASS still uses the default password."))
@@ -412,7 +573,7 @@ def validate_config(project: pathlib.Path) -> list[Issue]:
                     "warning",
                     "ftp_all_domains",
                     "Enabled FTP users with access to all htdocs domains: " + ", ".join(sorted(all_domain_users)),
-                    "Assign a home_rel if full multi-domain access is not intentional.",
+                    "In the MeowHome FTP UI, assign only the intended domains and save; retaining all-domain access is a security-relevant operator choice.",
                 ))
             override = project / "docker-compose.override.yml"
             generated_override = False
@@ -479,7 +640,7 @@ def validate_config(project: pathlib.Path) -> list[Issue]:
                         "warning",
                         "webroot_owner_drift",
                         f"Top-level htdocs ownership differs from PUID:PGID {expected[0]}:{expected[1]}: " + ", ".join(sorted(drift)),
-                        "Verify ACL/intent before changing ownership; do not blindly chown recursively.",
+                        "Run ./tools/meowhome.py access-review --json. Verify each webroot owner with its app/operator; do not chown recursively.",
                     ))
 
                 vhost_dir = project / "apache/vhosts"
@@ -539,6 +700,22 @@ def validate_config(project: pathlib.Path) -> list[Issue]:
         issues.append(Issue("warning", "legacy_uid_drift", "FTP_HOST_UID differs from PUID; PUID is authoritative."))
     if legacy_gid and legacy_gid != env.get("PGID", ""):
         issues.append(Issue("warning", "legacy_gid_drift", "FTP_HOST_GID differs from PGID; PGID is authoritative."))
+
+    compose_file = project / "docker-compose.yml"
+    if compose_file.is_file():
+        try:
+            compose_text = compose_file.read_text(encoding="utf-8", errors="replace")
+            for service in ("ui", "certbot"):
+                match = re.search(rf"(?ms)^  {service}:\n(.*?)(?=^  [A-Za-z0-9_-]+:|^networks:|\Z)", compose_text)
+                if match and "/var/run/docker.sock" in match.group(1):
+                    issues.append(Issue(
+                        "error",
+                        "docker_socket_exposure",
+                        f"{service} still mounts /var/run/docker.sock directly.",
+                        "Upgrade to the private meowhome_control adapter; only that internal service should own the Docker socket.",
+                    ))
+        except OSError:
+            pass
 
     return issues
 
@@ -683,6 +860,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--lines", type=int, default=200)
     p.add_argument("--follow", action="store_true")
 
+    p = sub.add_parser("cleanup-legacy-ftp-env",
+                       help="Review obsolete FTP env keys, with --apply to remove them safely")
+    p.add_argument("--apply", action="store_true")
+    p.add_argument("--json", action="store_true")
+
+    p = sub.add_parser("access-review", help="Read-only report of FTP scope and top-level webroot ownership")
+    p.add_argument("--json", action="store_true")
+
     p = sub.add_parser("repair-control-plane")
     p.add_argument("--json", action="store_true")
     return parser
@@ -704,6 +889,22 @@ def main(argv: Iterable[str] | None = None) -> int:
         result = {"project": str(project), "runtime": runtime, "issues": [asdict(i) for i in issues]}
         print_value(result, args.json)
         return 0 if not any(i.severity == "error" for i in issues) else 1
+    if args.command == "cleanup-legacy-ftp-env":
+        try:
+            result = cleanup_legacy_ftp_env(project, apply=args.apply)
+        except (OSError, ValueError, RuntimeError) as exc:
+            print(f"Legacy FTP cleanup refused: {exc}", file=sys.stderr)
+            return 1
+        print_value(result, args.json)
+        return 0
+    if args.command == "access-review":
+        try:
+            result = access_review(project)
+        except (OSError, ValueError) as exc:
+            print(f"Access review failed: {exc}", file=sys.stderr)
+            return 1
+        print_value(result, args.json)
+        return 0
     if args.command == "repair-control-plane":
         try:
             result = repair_control_plane_permissions(project)

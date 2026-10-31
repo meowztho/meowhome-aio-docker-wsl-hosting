@@ -1,5 +1,101 @@
 # Changelog
 
+## v2.9.6 — Private-use stabilization
+
+- Fresh-install ownership follows the invoking WSL user, including sudo installs;
+  incomplete packages fail before modifying the target. Existing data and `.env`
+  values remain intact during upgrades.
+- New installations generate separate database/UI secrets, bind FTP to localhost,
+  and require opt-in for DNS/Certbot automation.
+- FTP UID/GID mapping fails on collisions instead of silently starting with a
+  different identity; domain assignment rejects symlink roots.
+- Run FTP under Docker's init process: repeated FTPS sessions no longer crash
+  the listener when it reaps orphaned session processes as PID 1.
+- File-manager operations use directory descriptors and refuse symlink traversal
+  and hard-linked write targets. New content uses the configured PHP/FTP identity.
+- Restore preflights protected paths and FTPS material before stopping services;
+  valid matching certificate/key pairs produce a private, atomically replaced PEM.
+- Fresh-database restore waits for authenticated TCP readiness before SQL import.
+- Upgrades no longer recreate example sites removed by the operator; audit events
+  retain only actor/action/target/outcome and omit diagnostic details.
+- Updated UI dependencies and migrated template calls to the current API, with
+  authenticated real-route and CSRF regression coverage.
+- Configurable control-service Docker socket for hosts with multiple engines.
+- This is a private administrator release; untrusted customer isolation is pending.
+- Verified in WSL on 2026-10-31: 144 regression tests (4 environment-dependent
+  skips), all 13 installer tests as root, and separate real Docker FTPS/recovery
+  tests. Live checks covered authenticated UI pages, CSRF rejection, file-manager
+  writes shared with PHP, an HTTPS/PHP response, repeated FTPS sessions, and UI
+  backup creation. Customer isolation is not included in this acceptance.
+
+## v2.9.5 — Config and access diagnostics
+- Safe preview/opt-in cleanup for obsolete FTP_ENABLED/FTP_HOST_UID/FTP_HOST_GID variables, preserving PUID/PGID, FTP identities, and credentials; private exact-byte backup.
+- Read-only FTP scope and webroot owner review for deliberate access decisions.
+- FTP all-domain and noncanonical webroot warnings remain visible until authorization/ownership is deliberately changed.
+- Deliberately leaves existing UI administrator password unchanged.
+
+## v2.9.4 — Sichere Apache VHost-Verwaltung
+
+- Geführtes Erstellen und manuelle Diff-Vorschau für VHosts.
+- Löschbestätigung mit Revisionsprüfung und Rückfall nach Apache-Test.
+- Certbot, DNS und Benutzerdaten bleiben unverändert.
+- Release-Abnahme: 109 lokale Unit-/Regressionstests, frischer Installer und Docker Compose erfolgreich;
+  temporärer VHost über authentifizierte Live-UI erstellt und gelöscht; Bestands-VHosts unverändert.
+- GitHub-basierte Git-Historie und CI-Test-Workflow im Release-Paket enthalten.
+- Quellstand korrigiert: kein Docker-Client im UI-Image, Apache Directory-Listing deaktiviert,
+  Installationsvorlage enthält notwendige Runtime-.gitignore.
+
+## v2.9.3
+- Read-only preview and guarded ServerAlias editing of custom Apache VHosts. Unrelated directives preserved.
+- Existing DNS, certbot and Apache owners remain unchanged.
+
+## v2.9.2
+- Guided settings for unequivocally generated Apache VHosts: aliases, PHP-FPM, reverse-proxy target, and existing TLS certificate selection.
+- Custom VHosts remain read-only here and editable through the Advanced VHost editor; conflict detection, revision checks and rollback protect changes.
+- DNS updater and Certbot retain their existing automation/ownership, with no new DNS records or certificates created by the UI.
+- Apache ServerAlias glob conflicts are distinguished from TLS SAN wildcard coverage.
+
+## v2.9.1
+- Domain/TLS health coverage, existing certificate auto-selection, read-only DNS overview, and bounded audit history.
+
+## v2.9.0
+
+- Added per-site hosting detail pages that combine hosting type, aliases, document root/reverse-proxy target, PHP detection, TLS status, and shortcuts without rewriting custom VHosts.
+- Added a webroot-scoped File Manager for listing, UTF-8 text editing, uploads up to 8 MiB, directory creation, and non-recursive deletion. Control-side canonical path checks reject traversal, absolute paths, and symlink escapes.
+- Added MariaDB user/grant inventory plus database-scoped user creation with a generated one-time password and explicit user removal. System users and raw SQL remain outside the browser API.
+- Extended the private control adapter with fixed file and database-user capabilities only; no generic shell, exec, or arbitrary scheduled-command route was introduced.
+- Kept DNS provider-neutral: no Cloudflare-specific DNS management semantics were added to the Core/UI.
+
+## v2.8.0
+
+- Reframed the local UI as a resource-oriented hosting control panel instead of a container/file-first interface.
+- Added Websites & Domains inventory with structured provisioning for webroots and reverse proxies while preserving raw VHost editing for advanced cases.
+- Added provider-neutral SSL/TLS inventory with certificate expiry visibility and existing Certbot renewal flow.
+- Added MariaDB database inventory plus narrowly scoped create/drop operations through the existing private control adapter; system schemas remain hidden/protected.
+- Added Doctor-backed dashboard tasks, hosting KPIs, and clearer service/administration navigation.
+- Resource inventories ignore Apache helper configs without `ServerName` and non-certificate entries under `letsencrypt/live`, keeping normal hosting views free of control-plane noise.
+- Extended the control adapter only with fixed doctor, database, and webroot capabilities; no generic exec/shell route was introduced.
+
+## v2.7.0
+### Security
+- Every state-changing Web UI route now requires a same-origin check plus a signed CSRF form token. UI responses also set `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: same-origin`, and `Cache-Control: no-store`.
+- Fresh installs generate a random initial `MEOWHOME_UI_PASS` instead of shipping `admin`; existing installations are never silently re-keyed. The generated credential is printed once by the installer and remains stored only in the owner-only `.env`.
+- `meowhome_ui` and `meowhome_certbot` no longer mount `/var/run/docker.sock`. Privileged Docker operations are isolated behind the non-published `meowhome_control` adapter on an internal Docker network.
+- The control adapter exposes only fixed MeowHome operations; there is no generic shell/exec endpoint. UI and Certbot use separate secrets, and the Certbot credential is restricted to Apache reload only.
+- State-changing UI operations append a secret-free JSONL audit trail to `state/control-audit.jsonl`.
+- `doctor` detects direct UI/Certbot Docker-socket exposure, missing/weak control tokens, insecure historical `.env` backup modes, suspicious proxy overrides, and incomplete SPF reconciliation configuration.
+
+### DNS / Apache hardening
+- SPF rewriting is opt-in and declarative. When enabled, `SPF_TEMPLATE_<zone>` defines the complete desired SPF record and `{PUBLIC_IP}` is reconciled to the current address; historical IP mechanisms are no longer appended indefinitely.
+- Apache disables directory listing by default with `Options -Indexes +FollowSymLinks` while preserving `.htaccess` compatibility for existing applications. No global CSP is imposed.
+
+### Architecture
+- The UI remains an adapter over existing Core owners. The private control service delegates to Compose, `tools/meowhome.py`, `meowftp.py`, backup tooling, Certbot, and Apache rather than creating parallel configuration state.
+- Control secrets live under `control/` with mode `0600`; the directory is `0700`. They are generated on install/upgrade and excluded from Git.
+
+### Verified
+- Security regression suite covers CSRF on all POST routes/forms, control-route restrictions, split UI/Certbot credentials, socket isolation, safe fresh-install credentials, DNS/SPF guards, secret permission diagnostics, and upgrade preservation.
+
 ## v2.6.2
 ### Fixed
 - Apache VHost control-plane ownership is now canonicalized to `PUID:PGID`; the UI repairs historical `root:root` active `.conf` drift before VHost operations without touching webroots or database data.

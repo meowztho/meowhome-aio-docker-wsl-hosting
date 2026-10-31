@@ -154,9 +154,18 @@ def normalize_home_rel(home_rel: str) -> str:
     if not parts or any(part == ".." for part in parts):
         raise SystemExit("Ungueltiger Pfad (.. nicht erlaubt).")
     normalized = "/".join(parts)
-    target = (pathlib.Path(HTDOCS).resolve() / normalized).resolve()
+    root = pathlib.Path(HTDOCS)
+    if root.is_symlink():
+        raise SystemExit("FTP-Wurzel htdocs darf kein Symlink sein.")
+    root = root.resolve()
+    target = root
+    for part in parts:
+        target = target / part
+        if target.is_symlink():
+            raise SystemExit(f"Symlink-Komponenten sind als FTP-Wurzel nicht erlaubt: {normalized}")
+    target = target.resolve()
     try:
-        target.relative_to(pathlib.Path(HTDOCS).resolve())
+        target.relative_to(root)
     except ValueError:
         raise SystemExit("Ungueltiger Pfad ausserhalb von htdocs.")
     return normalized
@@ -169,7 +178,7 @@ def available_domains() -> list[str]:
     domains: list[str] = []
     for child in root.iterdir():
         try:
-            if child.is_dir() and not child.name.startswith("."):
+            if not child.is_symlink() and child.is_dir() and not child.name.startswith("."):
                 domains.append(child.name)
         except OSError:
             continue
@@ -180,11 +189,17 @@ def normalize_domain(domain: str, *, require_exists: bool = True) -> str:
     value = (domain or "").strip()
     if not value or value in {".", ".."} or "/" in value or "\\" in value or "\x00" in value:
         raise SystemExit(f"Ungueltige Domain/Top-Level-Ordnerzuweisung: {domain!r}")
-    target = pathlib.Path(HTDOCS) / value
+    root = pathlib.Path(HTDOCS)
+    if root.is_symlink():
+        raise SystemExit("FTP-Wurzel htdocs darf kein Symlink sein.")
+    root = root.resolve()
+    target = root / value
     if require_exists and not target.is_dir():
         raise SystemExit(f"Domain-Ordner existiert nicht unter htdocs/: {value}")
+    if target.is_symlink():
+        raise SystemExit(f"Symlink-Domainordner sind als FTP-Wurzel nicht erlaubt: {value}")
     try:
-        target.resolve().relative_to(pathlib.Path(HTDOCS).resolve())
+        target.resolve().relative_to(root)
     except ValueError:
         raise SystemExit(f"Ungueltige Domain ausserhalb von htdocs/: {value}")
     return value
@@ -204,6 +219,7 @@ def normalize_domains(domains: list[str]) -> list[str]:
 
 
 def ensure_home_dir(home_rel: str) -> None:
+    home_rel = normalize_home_rel(home_rel)
     if home_rel == "":
         return
     path = os.path.join(HTDOCS, home_rel)
@@ -397,9 +413,7 @@ def _compose_override_content(users: list[dict[str, Any]]) -> str | None:
     for user in users:
         if user["access_mode"] != "domains":
             continue
-        domains = user["domains"]
-        if not domains:
-            raise SystemExit(f"[ERR] FTP User '{user['username']}' hat access_mode=domains aber keine Domainzuweisung.")
+        domains = normalize_domains(user["domains"])
         if len(domains) == 1:
             continue
         for domain in domains:
@@ -500,14 +514,31 @@ def _local_root_for(user: dict[str, Any]) -> str:
     if mode == "all":
         return "/var/www"
     if mode == "domains":
-        domains = user["domains"]
-        if not domains:
-            raise SystemExit(f"[ERR] FTP User '{user['username']}' hat keine zugewiesenen Domains.")
+        domains = normalize_domains(user["domains"])
         if len(domains) == 1:
             return f"/var/www/{domains[0]}"
         return f"{FTP_VIEW_ROOT}/{user['username']}"
-    home_rel = user["home_rel"]
-    return "/var/www" if not home_rel else f"/var/www/{home_rel}"
+    if mode != "path":
+        raise SystemExit(f"[ERR] FTP User '{user['username']}' hat einen ungueltigen Zugriffsmodus: {mode}")
+    home_rel = normalize_home_rel(user["home_rel"])
+    if not home_rel:
+        raise SystemExit(f"[ERR] FTP User '{user['username']}' hat access_mode=path ohne eingeschraenkten Pfad.")
+    return f"/var/www/{home_rel}"
+
+
+def _validate_user_access(user: dict[str, Any]) -> None:
+    mode = user["access_mode"]
+    if mode == "all":
+        return
+    if mode == "path":
+        user["home_rel"] = normalize_home_rel(user["home_rel"])
+        if not user["home_rel"]:
+            raise SystemExit(f"[ERR] FTP User '{user['username']}' hat access_mode=path ohne eingeschraenkten Pfad.")
+        return
+    if mode == "domains":
+        user["domains"] = normalize_domains(user["domains"])
+        return
+    raise SystemExit(f"[ERR] FTP User '{user['username']}' hat einen ungueltigen Zugriffsmodus: {mode}")
 
 
 def apply() -> None:
@@ -530,11 +561,9 @@ def apply() -> None:
     print(f"1/8 Gefunden: {len(users)} aktive User")
 
     for user in users:
+        _validate_user_access(user)
         if user["access_mode"] == "path":
             ensure_home_dir(user["home_rel"])
-        elif user["access_mode"] == "domains":
-            for domain in user["domains"]:
-                normalize_domain(domain)
 
     print("2/8 Erzeuge FTP-Domain-View (Compose Override)...")
     changed_override = write_compose_override(users)

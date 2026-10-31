@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-header"><div><div class="eyebrow">Hosting</div><h1>Websites & Domains</h1><p class="muted">Zentrale Übersicht über klassische Webroots, Reverse Proxies und benutzerdefinierte Apache-VHosts.</p></div><div class="toolbar"><a class="btn btn-primary" href="/sites/new">Website / VHost erstellen</a><a class="btn" href="/vhosts">VHosts verwalten / entfernen</a></div></div>
+<div class="card">
+  <div class="card-header"><div><div class="card-title">{{ sites|length }} Hosting-Einträge</div><p class="muted">Apache bleibt der Runtime-Owner; diese Ansicht fasst seine Konfiguration als Hosting-Ressourcen zusammen.</p></div></div>
+  <div class="resource-list">
+  {% for s in sites %}
+    <div class="resource-row">
+      <div class="resource-main"><strong>{{ s.host }}</strong><div class="muted">{% if s.aliases %}Aliases: {{ s.aliases|join(', ') }}{% else %}keine Aliases{% endif %}</div></div>
+      <div class="resource-meta">{% if s.kind == 'website' %}<span class="badge">Website</span> {{ s.document_root }}{% elif s.kind == 'proxy' %}<span class="badge">Reverse Proxy</span> {{ s.proxy_target }}{% else %}<span class="badge warn">Custom</span> manuelle Konfiguration{% endif %}</div>
+      <div class="resource-meta"><span class="badge {{ 'ok' if s.tls_status == 'ok' else 'warning' if s.tls_status == 'warning' else 'error' }}">{{ s.tls_label }}</span>{% if s.tls_uncovered_hosts %}<div class="muted" style="margin-top:5px">Nicht abgedeckt: {{ s.tls_uncovered_hosts|join(', ') }}</div>{% endif %}{% if s.cert_domain %}<div style="margin-top:5px">{{ s.cert_domain }}</div>{% endif %}</div>
+      <div class="toolbar"><a class="btn btn-sm btn-primary" href="/sites/{{ s.host }}">Verwalten</a><a class="btn btn-sm" href="/vhosts/edit?file={{ s.file }}">Advanced</a></div>
+    </div>
+  {% else %}<div class="notice">Noch keine VHosts vorhanden. <a href="/sites/new">Website / VHost erstellen</a>.</div>{% endfor %}
+  </div>
+</div>
+<div class="notice" style="margin-top:16px">Bestehende handgeschriebene VHosts werden nicht umgeschrieben. MeowHome erkennt sie und zeigt sie hier an; Spezialfälle bleiben unter <a href="/vhosts">VHosts verwalten / entfernen</a> vollständig editierbar.</div>
+{% endblock %}

@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-header"><div><div class="eyebrow">Websites &amp; Domains</div><h1>Domain-Aliases: {{ site.host }}</h1><p class="muted">Individuelle Apache-Konfigurationen bleiben erhalten. Der Editor ändert ausschließlich eindeutig erkannte ServerAlias-Direktiven.</p></div><a class="btn" href="/sites/{{ site.host }}">Zurück</a></div>
+<div class="grid"><section class="card col-8"><div class="card-header"><div class="card-title">Bestehenden VHost analysieren</div></div>
+{% if editable %}<form method="post" action="/sites/{{ site.host }}/aliases/preview">
+<input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}"><input type="hidden" name="revision" value="{{ revision }}">
+<div class="field"><label>Domain-Aliases (kommagetrennt)</label><input type="text" name="aliases" value="{{ aliases }}" placeholder="www.example.com"><span class="field-help">Mit Vorschau prüfen. Leeres Feld entfernt bestehende Aliases. Hauptdomain bleibt unverändert.</span></div>
+<div class="toolbar"><button type="submit" class="btn btn-primary">Änderungsvorschau</button></div></form>
+{% else %}<div class="notice warning">Keine sichere Bearbeitung möglich: {{ reason }}.</div><a class="btn" href="/vhosts/edit?file={{ site.file }}">Advanced VHost</a>{% endif %}
+</section><aside class="card col-4"><div class="card-title">Sicherheitsgrenzen</div><p class="muted">Andere Apache-Direktiven, Reverse-Proxy-Ziele und PHP-Einstellungen werden nicht verändert. Zertifikate und DNS verwalten weiterhin deine vorhandenen Dienste.</p><p class="muted">Nach Bestätigung führt MeowHome einen Apache-Test und Reload mit Rückfall auf die gespeicherte Konfiguration aus.</p></aside></div>
+{% endblock %}

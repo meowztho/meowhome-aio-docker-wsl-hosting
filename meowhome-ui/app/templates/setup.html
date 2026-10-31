@@ -16,7 +16,7 @@
 </div>
 {% endif %}
 
-<form method="post" action="/setup/save" class="stack-lg">
+<form method="post" action="/setup/save" class="stack-lg"><input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
   <div class="grid">
     <section class="card col-8">
       <div class="card-header"><div><div class="eyebrow">Network</div><div class="card-title">Ports & Bindings</div></div></div>

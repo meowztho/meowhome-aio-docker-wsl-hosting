@@ -119,15 +119,17 @@ def load_domains_from_env() -> List[Dict[str, Any]]:
     DOMAINS="zone1.com,zone2.de"
     Fuer jede Zone:
       - A_RECORDS_<slug>   = "zone1.com,sub1.zone1.com"
-      - SPF_UPDATE_<slug>  = "true|false"
+      - SPF_UPDATE_<slug>    = "true|false"
+      - SPF_TEMPLATE_<slug>  = "v=spf1 a mx ip4:{PUBLIC_IP} ~all"
     """
     zones = parse_csv(DOMAINS_RAW)
     result: List[Dict[str, Any]] = []
     for z in zones:
         slug = slug_domain(z)
         a_records = parse_csv(os.getenv(f"A_RECORDS_{slug}", z))  # Default: Root-A-Record = Zone
-        spf_update = parse_bool(os.getenv(f"SPF_UPDATE_{slug}", "true"))
-        result.append({"zone": z, "a_records": a_records, "spf_update": spf_update})
+        spf_update = parse_bool(os.getenv(f"SPF_UPDATE_{slug}", "false"))
+        spf_template = os.getenv(f"SPF_TEMPLATE_{slug}", "").strip()
+        result.append({"zone": z, "a_records": a_records, "spf_update": spf_update, "spf_template": spf_template})
     return result
 
 def load_proxied_overrides() -> Dict[str, bool]:
@@ -312,46 +314,43 @@ def get_spf_record(zone_id: str, name: str) -> Tuple[Optional[str], Optional[str
         logging.error(f"SPF Record Lookup {name} fehlgeschlagen: {e}")
     return None, None
 
-def merge_spf(current: str, ip: str, previous_ip: Optional[str] = None) -> str:
-    base = (current or "").strip()
-    quoted = len(base) >= 2 and base[0] == base[-1] == '"'
-    if quoted:
-        base = base[1:-1]
-    if not base.lower().startswith("v=spf1"):
-        merged = f"v=spf1 a mx ip4:{ip} ~all"
-        return f'"{merged}"' if quoted else merged
+def render_spf_template(template: str, public_ip: str) -> str:
+    desired = (template or "").strip().replace("{PUBLIC_IP}", public_ip)
+    if not desired.lower().startswith("v=spf1 ") and desired.lower() != "v=spf1":
+        raise ValueError("SPF_TEMPLATE must start with v=spf1")
+    return desired
 
-    tokens = base.split()
-    if previous_ip and previous_ip != ip:
-        previous = f"ip4:{previous_ip}"
-        tokens = [t for t in tokens if t != previous]
-    needle = f"ip4:{ip}"
-    if needle not in tokens:
-        all_idx = next((i for i, t in enumerate(tokens) if t.lower().endswith("all")), None)
-        insert_pos = all_idx if all_idx is not None else len(tokens)
-        tokens.insert(insert_pos, needle)
-    merged = " ".join(tokens)
-    return f'"{merged}"' if quoted else merged
 
-def update_spf(zone_id: str, root_name: str, public_ip: str, previous_ip: Optional[str] = None) -> bool:
+def update_spf(zone_id: str, root_name: str, public_ip: str, template: str) -> bool:
+    if not template:
+        logging.error(
+            f"SPF_UPDATE fuer {root_name} ist aktiv, aber SPF_TEMPLATE_{slug_domain(root_name)} fehlt. "
+            "Der Record wird nicht veraendert."
+        )
+        return False
+    try:
+        desired = render_spf_template(template, public_ip)
+    except ValueError as exc:
+        logging.error(f"SPF Template fuer {root_name} ungueltig: {exc}")
+        return False
     rec_id, content = get_spf_record(zone_id, root_name)
     if not rec_id:
-        logging.info(f"Kein SPF-TXT fuer {root_name} gefunden – wird nicht automatisch angelegt.")
+        logging.error(f"Kein bestehender SPF-TXT fuer {root_name} gefunden; MeowHome legt ihn nicht automatisch an.")
+        return False
+    current = (content or "").strip()
+    if current == desired or current.strip('"') == desired.strip('"'):
+        logging.info(f"SPF bereits im gewuenschten Zustand fuer {root_name}.")
         return True
-    new_spf = merge_spf(content or "", public_ip, previous_ip=previous_ip)
-    if new_spf == (content or ""):
-        logging.info(f"SPF bereits aktuell fuer {root_name}.")
-        return True
-    payload = {"type": "TXT", "name": root_name, "content": new_spf, "ttl": 300}
+    payload = {"type": "TXT", "name": root_name, "content": desired, "ttl": 300}
     try:
         r = SESSION.put(
             f"{CLOUDFLARE_API_URL}/zones/{zone_id}/dns_records/{rec_id}",
             data=json.dumps(payload),
-            timeout=20
+            timeout=20,
         )
         ok = r.status_code < 300 and r.json().get("success", False)
         if ok:
-            logging.info(f"SPF aktualisiert fuer {root_name}: {new_spf}")
+            logging.info(f"SPF reconciled fuer {root_name}: {desired}")
         else:
             logging.error(f"SPF Update fehlgeschlagen fuer {root_name}: {r.text}")
         return ok
@@ -411,6 +410,7 @@ def main():
                 zone_name = entry["zone"]
                 a_records = entry.get("a_records", [])
                 spf_update = entry.get("spf_update", False)
+                spf_template = entry.get("spf_template", "")
 
                 logging.info(f"Verarbeite Zone: {zone_name}")
                 zone_id = get_zone_id(zone_name)
@@ -432,7 +432,7 @@ def main():
                         if not update_a_record(zone_id, rec_id, fqdn, public_ip):
                             all_success = False
 
-                if spf_update and not update_spf(zone_id, zone_name, public_ip, previous_ip=previous_ip):
+                if spf_update and not update_spf(zone_id, zone_name, public_ip, spf_template):
                     all_success = False
 
             # Only advance state when every requested mutation succeeded. Otherwise

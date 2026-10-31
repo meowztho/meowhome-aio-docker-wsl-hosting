@@ -54,11 +54,30 @@ run_certbot() {
 }
 
 reload_apache() {
-  echo "[certbot] apache reload/restart"
-  docker exec meowhome_apache apachectl -k graceful >/dev/null 2>&1 && return 0
-  docker restart meowhome_apache >/dev/null 2>&1 && return 0
-  echo "[certbot] WARNING: Apache reload/restart failed" >&2
-  return 1
+  echo "[certbot] request Apache reload through MeowHome control adapter"
+  python3 - <<'PY_CONTROL_RELOAD'
+import json
+import os
+import pathlib
+import urllib.request
+
+url = os.getenv("MEOWHOME_CONTROL_URL", "http://control:8765") + "/v1/apache-reload"
+token_file = pathlib.Path(os.getenv("MEOWHOME_CONTROL_TOKEN_FILE", "/run/secrets/meowhome-control-token"))
+token = token_file.read_text(encoding="utf-8").strip()
+req = urllib.request.Request(
+    url,
+    data=b"{}",
+    method="POST",
+    headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"},
+)
+try:
+    with urllib.request.urlopen(req, timeout=30) as response:
+        payload = json.loads(response.read().decode("utf-8"))
+except Exception as exc:
+    raise SystemExit(f"control adapter reload failed: {exc}")
+if not payload.get("ok"):
+    raise SystemExit("control adapter rejected Apache reload: " + json.dumps(payload))
+PY_CONTROL_RELOAD
 }
 
 issue_dns_cloudflare() {
